@@ -1,0 +1,227 @@
+# mandatory parameters
+metadata_dir: /lisc/scratch/ccr/HCC-MUW/Metadata
+data_dir: /lisc/scratch/ccr/HCC-MUW/Data
+lib_meta_data: combined_libraries_with_lineages_important_info_nonAAseq.pkl
+project: HCC_MUW
+group_tests:
+  - Controls
+  - HCC
+
+###
+# filter metadata (optional if not all samples are needed)
+filters_metadata:
+  group_test:
+    - Controls
+    - HCC
+# Optional parameters with defaults
+meta_typefile: excel
+col_sample_name: SampleName
+col_target: group_test
+col_predict: class1_proba
+random_state: 420
+
+# Features and thresholds
+extra_features_to_include:
+  - Sex
+  - Age
+data_types:
+  - exist
+
+# Options for data processing
+with_oligos_options:
+  - true
+  - false
+with_additional_features_options:
+  - true
+  - false
+with_run_plates_options:
+  - false
+filter_by_entropy:
+  - false
+filter_by_correlation:
+  - false
+
+# Subgroup settings
+subgroups_to_name:
+  all: Complete library
+  is_ALIGENT: Aligent library
+  is_TWIST: Twist library
+  is_CORONA: Corona library
+  is_PNP: "Metagenomics\nantigens"
+  is_auto: Human Autoantigens
+  is_patho: Pathogenic strains
+  is_probio: Probiotic strains
+  is_IgA: "Antibody-coated\nstrains"
+  is_MPA: "Microbiota\nstrains"
+  is_bac_flagella: Flagellins
+  is_infect: "Infectious\npathogens"
+  is_EBV: "Epstein-Barr\nVirus"
+  is_toxin: Toxin
+  is_phage: Phages
+  is_allergens: Allergens
+  is_influenza: Influenza
+  is_EM: "Microbiota\ngenes"
+  signalp6_slow: Secreted proteins
+  "is_topgraph_new_&_old": Membrane proteins
+  diamond_mmseqs_intersec_toxin: Predicted toxins
+  is_IEDB_or_cntrl: IEDB/controls
+  is_pos_cntrl: Positive control
+  is_neg_cntrl: Negative control
+  is_rand_cntrl: Random control
+subgroups_order:
+  - Complete library
+  - Aligent library
+  - Twist library  # 'Corona library',
+  - "Metagenomics\nantigens"
+  - Human Autoantigens
+  - Pathogenic strains
+  - Probiotic strains
+  - "Antibody-coated\nstrains"
+  - "Microbiota\nstrains"
+  - Flagellins
+  - "Infectious\npathogens"
+  - "Epstein-Barr\nVirus"
+  - Toxin
+  - Phages
+  - Allergens
+  - Influenza
+  - "Microbiota\ngenes"
+  - Secreted proteins
+  - Membrane proteins
+  - Predicted toxins
+  - IEDB/controls
+  - Positive control
+  - Negative control
+  - Random control
+subgroups_to_include:
+  - all
+  - is_ALIGENT
+  - is_TWIST
+  - is_PNP
+  - is_auto
+  - is_patho
+  - is_probio
+  - is_IgA
+  - is_MPA
+  - is_bac_flagella
+  - is_infect
+  - is_EBV
+  - is_toxin
+  - is_phage
+  - is_allergens
+  - is_influenza
+  - is_EM
+  - signalp6_slow
+  - is_topgraph_new_&_old
+  - diamond_mmseqs_intersec_toxin
+  - is_IEDB_or_cntrl
+  - is_pos_cntrl
+  - is_neg_cntrl
+  - is_rand_cntrl
+
+# Estimators
+estimators_info:
+  XGBClassifier:
+    estimator_class: 'xgboost.XGBClassifier'
+    estimator_kwargs:
+      objective: 'binary:logistic'
+      eval_metric: 'auc'
+      random_state: 420
+      nthread: 1
+      n_jobs: 1
+
+# Parameter grid for hyperparameter tuning
+param_grid:
+  xgboost:
+    preprocessor__peptides__feature_selection__percentile:
+      type: integer
+      low: 5
+      high: 50
+
+    estimator__learning_rate:
+      type: real
+      low: 0.01
+      high: 0.3
+      prior: uniform
+
+    estimator__max_depth:
+      type: integer
+      low: 3
+      high: 10
+
+    estimator__subsample:
+      type: real
+      low: 0.6
+      high: 1.0
+      prior: uniform
+
+    estimator__colsample_bytree:
+      type: real
+      low: 0.6
+      high: 1.0
+      prior: uniform
+
+    estimator__reg_lambda:
+      type: real
+      low: 0.1
+      high: 10.0
+      prior: log-uniform
+
+    estimator__n_estimators:
+      type: integer
+      low: 50
+      high: 500
+
+  random-forest:
+    preprocessor__peptides__feature_selection__percentile:
+      type: integer
+      low: 5
+      high: 50
+
+    estimator__n_estimators:
+      type: integer
+      low: 50
+      high: 500
+
+    estimator__max_depth:
+      type: integer
+      low: 3
+      high: 30
+
+    estimator__min_samples_split:
+      type: integer
+      low: 2
+      high: 15
+
+    estimator__min_samples_leaf:
+      type: integer
+      low: 1
+      high: 15
+
+    estimator__max_features:
+      type: categorical
+      categories: ['sqrt', 'log2', 0.3, 0.5, 0.7]
+
+    estimator__class_weight:
+      type: categorical
+      categories: ['balanced', 'balanced_subsample']
+
+# parameters for internal classes
+transposed: true
+imputed: false
+fillna: false
+libraries_prefixes:
+  - agilent
+  - corona2
+  - twist
+cv_method: kfold
+split_train_test: true
+compute_feature_importance: true
+return_train: true
+return_test: true
+external_set: false
+tuning_parameters: true
+train_size: 0.8
+k: 10
+tuning_n_iter: 20
+tuning_k: 5

@@ -1,0 +1,39 @@
+# -----------------------
+# Experiment: Controls vs HCC
+# -----------------------
+
+# Config
+--config config.yaml
+
+# Output
+--out_dir results/exp1
+--out_name Controls_vs_HCC
+
+# Model
+--model_type random-forest
+--run_nested_cv True
+--outer_cv_split 5
+--inner_cv_split 5
+
+# Feature setup
+--subgroup all
+--with_oligos True
+--with_additional_features False
+
+# Prevalence filtering
+--prevalence_threshold_min 2.0
+--prevalence_threshold_max 98.0
+
+# Train dataset definition
+--train '{"group_test":["Controls","HCC"]}'
+# -- train '{"treatment":"ICI", "Centre":"Hamburg"}'
+
+# Train/test split dataset definition
+#--train_size 0.7
+#--train_test_split_data '{"group_test":"Controls"}'
+
+# Optional validations
+# --validate '{"treatment":"ICI"}' HCC-ICI_HCC-TKI
+# --validate '{"treatment":"ICI"}' HCC-TKI_HCC-ICI
+
+

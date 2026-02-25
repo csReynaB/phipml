@@ -1,0 +1,98 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+# ---------------------------------------------------------------------
+# Project metadata (informational unless you pip install -e .)
+# ---------------------------------------------------------------------
+[project]
+name = "phipml"
+version = "1.0"
+description = "Classification analysis and ML pipelines using XGBoost/random forest, SHAP, and sklearn"
+readme = "README.md"
+requires-python = ">=3.10"
+
+authors = [
+  { name = "Carlos S. Reyna-Blanco" }
+]
+
+# ---------------------------------------------------------------------
+# Runtime dependencies
+# (DOCUMENTATION + OPTIONAL pip editable install or conda)
+# ---------------------------------------------------------------------
+dependencies = [
+  # Core
+  "numpy",
+  "pandas",
+  "scipy",
+  "joblib",
+  "tqdm",
+  "pyyaml",
+
+  # ML / optimization
+  "scikit-learn",
+  "xgboost",
+  "scikit-optimize",
+
+  # Explainability
+  "shap",
+
+  # Plotting
+  "matplotlib",
+  "seaborn",
+]
+
+# ---------------------------------------------------------------------
+# Optional dependencies (DEV ONLY)
+# Install with: pip install -e .[dev]
+# Or install via conda-forge separately
+# ---------------------------------------------------------------------
+[project.scripts]
+trainTest = "phipml.cli.train_test:main"
+
+[project.optional-dependencies]
+dev = [
+  "black",
+  "isort",
+  "ruff",
+  "pre-commit",
+  "jupyterlab",
+]
+# ---------------------------------------------------------------------
+# Black — formatter
+# ---------------------------------------------------------------------
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+# ---------------------------------------------------------------------
+# isort — import sorting (Black-compatible)
+# ---------------------------------------------------------------------
+[tool.isort]
+profile = "black"
+line_length = 88
+known_first_party = ["classification"]
+combine_as_imports = true
+
+# ---------------------------------------------------------------------
+# Ruff — linting + unused imports
+# ---------------------------------------------------------------------
+#[tool.ruff]
+#line-length = 88
+#select = ["E", "F", "I"]
+#ignore = ["E501"]  # handled by Black
+
+#[tool.ruff.per-file-ignores]
+#"__init__.py" = ["F401"]          # allow re-exports
+#"notebooks/*" = ["E402", "F401"]  # notebooks are messy by nature
+
+# ---------------------------------------------------------------------
+# Pytest (optional, harmless if unused)
+# ---------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

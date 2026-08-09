@@ -83,7 +83,7 @@ if __name__ == "__main__":
         "legend": args.legend_fontsize,
         "colorbar": args.colorbar_fontsize,
     }
-    cmap = parse_cmap_arg(args.cmap)
+    cmap = parse_cmap_arg(args.cmap_colors)
 
     run_shap_summary_and_feature_table(
         config_file=args.config_file,

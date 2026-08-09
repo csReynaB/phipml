@@ -278,11 +278,11 @@ def main(argv=None):
             # Optional nested CV
             if args.run_nested_cv:
 
-                run_and_save_nested_cv(X_train, y_train, args, config)
+                results = run_and_save_nested_cv(X_train, y_train, args, config)
 
-            validate_and_save(
-                X_train, y_train, X_test, y_test, args, config, args.out_name
-            )
+            results = validate_and_save(
+                    X_train, y_train, X_test, y_test, args, config, args.out_name
+                )
 
     # Otherwise, standard training mode
     if args.train:
@@ -310,7 +310,7 @@ def main(argv=None):
         # Nested CV on final training set
         if args.run_nested_cv:
 
-            run_and_save_nested_cv(X_train, y_train, args, config)
+            results = run_and_save_nested_cv(X_train, y_train, args, config)
 
         # Train best model if validations exist
         if val_specs:
@@ -324,7 +324,7 @@ def main(argv=None):
                         split_data=split_data,
                     )
 
-                    validate_and_save(
+                    results = validate_and_save(
                         X_train,
                         y_train,
                         X_test,

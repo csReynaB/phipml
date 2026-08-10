@@ -133,10 +133,22 @@ estimators_info:
 # Parameter grid for hyperparameter tuning
 param_grid:
   xgboost:
-    preprocessor__peptides__feature_selection__percentile:
+    preprocessor__peptides__feature_selection__estimator__l1_ratio:
+      type: real
+      low: 0.55
+      high: 0.9
+      prior: uniform
+
+    preprocessor__peptides__feature_selection__estimator__alpha_min_ratio:
+      type: real
+      low: 0.001
+      high: 0.1
+      prior: log-uniform
+
+    preprocessor__peptides__feature_selection__estimator__n_alphas:
       type: integer
-      low: 5
-      high: 50
+      low: 50
+      high: 200
 
     estimator__learning_rate:
       type: real

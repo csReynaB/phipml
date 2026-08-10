@@ -1,1323 +1,1133 @@
-# ======================
-# Standard library
-# ======================
-import importlib
-import os
-from pathlib import Path
+"""Configuration-driven loading of peptide data, and sample and library metadata.
 
-# ======================
-# Third-party libraries
-# ======================
+``data_input`` may be either one combined peptide matrix or a directory/manifest
+of per-sample enrichment tables. Per-sample tables are converted internally to
+a sample-by-peptide ``uint8`` presence/absence matrix.
+
+The public workflow remains:
+    config = Config("config.yaml")
+    metadata = MetadataHandler(config)
+    oligos = OligosHandler(config)
+    features = FeatureManager(config, metadata, oligos, ...)
+    X, y = features.get_features_target()
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import MISSING, dataclass, field, fields
+from pathlib import Path
+from typing import Any
+
 import numpy as np
 import pandas as pd
-import seaborn as sns
-import xgboost as xgb
 import yaml
-from sklearn import set_config
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import LabelEncoder
-from skopt.space import Categorical, Integer, Real
 
-# ======================
-# Local / project imports
-# ======================
-from phipml.utils.peptides_filter import (
-    CorrelationFilter,
-    EntropyFilter,
-    PrevalenceFilter,
-)
-
-# ======================
-# Global configuration
-# ======================
-pd.set_option("future.no_silent_downcasting", True)
-set_config(transform_output="pandas")
+SUPPORTED_TABLE_EXTENSIONS = {".csv", ".tsv", ".txt", ".xlsx", ".xls"}
+SUPPORTED_LIBRARY_METADATA_EXTENSIONS = SUPPORTED_TABLE_EXTENSIONS | {
+    ".pkl",
+    ".pickle",
+}
 
 
+def _read_table(path: Path, *, index_col: str | int | None = None) -> pd.DataFrame:
+    """Read a delimited text or Excel table based on its filename suffix."""
+    if not path.is_file():
+        raise FileNotFoundError(f"Input file does not exist: {path}")
+
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        return pd.read_csv(path, index_col=index_col, low_memory=False)
+    if suffix in {".tsv", ".txt"}:
+        return pd.read_csv(path, sep="\t", index_col=index_col, low_memory=False)
+    if suffix in {".xlsx", ".xls"}:
+        return pd.read_excel(path, sheet_name=0, index_col=index_col)
+    raise ValueError(
+        f"Unsupported table format '{suffix}' for {path}. "
+        f"Supported formats: {sorted(SUPPORTED_TABLE_EXTENSIONS)}"
+    )
+
+
+@dataclass(init=False)
 class Config:
-    def __init__(
-        self,
-        # ======================
-        # Core
-        # ======================
-        config_file,
-        project=None,
-        random_state=None,
-        # ======================
-        # Paths / directories
-        # ======================
-        metadata_dir=None,
-        data_dir=None,
-        # ======================
-        # Metadata & input structure
-        # ======================
-        lib_meta_data=None,
-        meta_typefile=None,
-        col_sample_name=None,
-        col_target=None,
-        col_predict=None,
-        # ======================
-        # Data types & features
-        # ======================
-        data_types=None,
-        extra_features_to_include=None,
-        with_oligos_options=None,
-        with_additional_features_options=None,
-        with_run_plates_options=None,
-        # ======================
-        # Filtering & preprocessing
-        # ======================
-        filter_by_entropy=None,
-        entropy_threshold=None,
-        prevalence_thresholds_min=None,
-        prevalence_thresholds_max=None,
-        filter_by_correlation=None,
-        filters_metadata=None,
-        combined_filters_metadata=None,
-        fillna=None,
-        imputed=None,
-        transposed=None,
-        # ======================
-        # Grouping & stratification
-        # ======================
-        group_tests=None,
-        subgroups_to_include=None,
-        subgroups_to_name=None,
-        subgroups_order=None,
-        subgroups_colors=None,
-        # ======================
-        # Models & estimators
-        # ======================
-        estimators_info=None,
-        param_grid=None,
-        tuning_parameters=None,
-        # ======================
-        # Cross-validation & tuning
-        # ======================
-        cv_method=None,
-        split_train_test=None,
-        train_size=None,
-        tuning_n_iter=None,
-        tuning_k=None,
-        k=None,
-        external_set=None,
-        libraries_prefixes=None,
-        # ======================
-        # Outputs & diagnostics
-        # ======================
-        compute_feature_importance=None,
-        return_train=None,
-        return_test=None,
-    ):
+    """Validated application configuration loaded from one YAML file."""
 
-        # ======================
-        # Mandatory / core inputs
-        # ======================
-        self.metadata_dir = (
-            Path(metadata_dir) if isinstance(metadata_dir, str) else None
-        )
-        self.data_dir = Path(data_dir) if isinstance(data_dir, str) else None
-        self.project = project if isinstance(project, str) else None
-        self.lib_meta_data = lib_meta_data if isinstance(lib_meta_data, str) else None
-        self.group_tests = group_tests if isinstance(group_tests, str) else None
+    data_input: Path
+    metadata_input: Path
+    lib_metadata_input: Path | None = None
+    group_tests: list[str] = field(default_factory=list)
 
-        # ======================
-        # Defaults & schema
-        # ======================
-        self.meta_typefile = (
-            meta_typefile if meta_typefile in {"excel", "csv"} else "excel"
-        )  # Default excel, must be set explicitly ('excel' or 'csv')
-        self.col_sample_name = (
-            col_sample_name if isinstance(col_sample_name, str) else "SampleName"
-        )
-        self.col_target = col_target if isinstance(col_target, str) else "group_test"
-        self.col_predict = (
-            col_predict if isinstance(col_predict, str) else "class1_proba"
-        )
+    project: str | None = None
+    col_sample_name: str = "SampleName"
+    col_target: str = "group_test"
+    col_predict: str = "class1_proba"
+    lib_col_peptide_name: str | None = None
+    extra_features_to_include: list[str] = field(default_factory=list)
+    filters_metadata: dict[str, Any] | None = None
+    combined_filters_metadata: list[dict[str, Any]] | None = None
+    oligo_filters: dict[str, Any] | None = None
+    oligo_filter_mode: str = "all"
+    peptide_prefixes: list[str] = field(
+        default_factory=lambda: ["agilent_", "corona2_", "twist_"]
+    )
+    data_input_mode: str = "auto"
+    sample_file_patterns: list[str] = field(default_factory=lambda: ["*.csv"])
+    sample_file_peptide_column: str = "ID"
+    sample_name_regex: str | None = None
+    transposed: bool = True
+    fillna_value: float | None = None
+    random_state: int = 420
+    param_grid: dict[str, Any] = field(default_factory=dict)
+    classification: dict[str, Any] = field(default_factory=dict)
+    # survival: dict[str, Any] = field(default_factory=dict)
 
-        # ======================
-        # Encoding & reproducibility
-        # ======================
-        self.sex_encoding = {"F": 0, "M": 1}
-        self.random_state = random_state if isinstance(random_state, int) else 420
+    # Old keys mapped to the new names. They may be removed after configs migrate.
+    _ALIASES = {
+        "lib_meta_data": "lib_metadata_input",
+        "libraries_prefixes": "peptide_prefixes",
+    }
+    _IGNORED_LEGACY_KEYS = {
+        "meta_typefile",
+        "data_types",
+        "with_oligos_options",
+        "with_additional_features_options",
+        "with_run_plates_options",
+        "filter_by_entropy",
+        "filter_by_correlation",
+        "subgroups_to_name",
+        "subgroups_order",
+        "subgroups_to_include",
+        "subgroups_colors",
+        "estimators_info",
+        "cv_method",
+        "split_train_test",
+        "compute_feature_importance",
+        "return_train",
+        "return_test",
+        "external_set",
+        "tuning_parameters",
+        "train_size",
+        "k",
+        "tuning_n_iter",
+        "tuning_k",
+        "fillna",
+        "imputed",
+        "impute_additional_features",
+    }
 
-        # ======================
-        # Features & data types
-        # ======================
-        self.extra_features_to_include = (
-            extra_features_to_include
-            if (
-                isinstance(extra_features_to_include, list)
-                and all(isinstance(item, str) for item in extra_features_to_include)
-            )
-            else ["Sex", "Age"]
-        )
-        self.data_types = (
-            data_types
-            if (
-                isinstance(data_types, list)
-                and all(isinstance(item, str) for item in data_types)
-            )
-            else ["exist"]
-        )
+    def __init__(self, config_file: str | Path, **overrides: Any) -> None:
+        path = Path(config_file).expanduser().resolve()
+        if path.suffix.lower() not in {".yaml", ".yml"}:
+            raise ValueError("config_file must have a .yaml or .yml extension")
+        if not path.is_file():
+            raise FileNotFoundError(f"Configuration file does not exist: {path}")
 
-        ###
-        self.entropy_threshold = (
-            entropy_threshold if isinstance(entropy_threshold, float) else 0.4
-        )
+        with path.open(encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle) or {}
+        if not isinstance(raw, Mapping):
+            raise TypeError("The YAML root must be a mapping")
 
-        self.prevalence_thresholds_min = (
-            prevalence_thresholds_min
-            if (
-                isinstance(prevalence_thresholds_min, list)
-                and all(
-                    isinstance(item, (int, float)) for item in prevalence_thresholds_min
-                )
-            )
-            else [5.0, 10.0, 20.0, 50.0]
-        )
-        self.prevalence_thresholds_max = (
-            prevalence_thresholds_max
-            if (
-                isinstance(prevalence_thresholds_max, list)
-                and all(
-                    isinstance(item, (int, float)) for item in prevalence_thresholds_max
-                )
-            )
-            else [95.0]
-        )
-        self.with_oligos_options = (
-            with_oligos_options
-            if (
-                isinstance(with_oligos_options, list)
-                and all(isinstance(item, bool) for item in with_oligos_options)
-            )
-            else [True, False]
-        )
-        self.with_additional_features_options = (
-            with_additional_features_options
-            if (
-                isinstance(with_additional_features_options, list)
-                and all(
-                    isinstance(item, bool) for item in with_additional_features_options
-                )
-            )
-            else [True, False]
-        )
-        self.with_run_plates_options = (
-            with_run_plates_options
-            if (
-                isinstance(with_run_plates_options, list)
-                and all(isinstance(item, bool) for item in with_run_plates_options)
-            )
-            else [False]
-        )
-        self.filter_by_entropy = (
-            filter_by_entropy
-            if (
-                isinstance(filter_by_entropy, list)
-                and all(isinstance(item, bool) for item in filter_by_entropy)
-            )
-            else [False]
-        )
-        self.filter_by_correlation = (
-            filter_by_correlation
-            if (
-                isinstance(filter_by_correlation, list)
-                and all(isinstance(item, bool) for item in filter_by_correlation)
-            )
-            else [False]
-        )
-        self.subgroups_to_name = (
-            subgroups_to_name
-            if isinstance(subgroups_to_name, dict)
-            else {
-                "all": "Complete library",
-                "bloodtests": "Blood tests",
-                "is_ALIGENT": "Aligent library",
-                "is_TWIST": "Twist library",
-                "is_CORONA": "Corona library",
-                "is_PNP": "Metagenomics\nantigens",
-                "is_auto": "Human Autoantigens",
-                "is_patho": "Pathogenic strains",
-                "is_probio": "Probiotic strains",
-                "is_IgA": "Antibody-coated\nstrains",
-                "is_MPA": "Microbiota\nstrains",
-                "is_bac_flagella": "Flagellins",
-                "is_infect": "Infectious\npathogens",
-                "is_EBV": "Epstein-Barr\nVirus",
-                "is_toxin": "Toxin",
-                "is_phage": "Phages",
-                "is_allergens": "Allergens",
-                "is_influenza": "Influenza",
-                "is_EM": "Microbiota\ngenes",
-                "signalp6_slow": "Secreted proteins",
-                "is_topgraph_new_&_old": "Membrane proteins",
-                "diamond_mmseqs_intersec_toxin": "Predicted toxins",
-                "is_IEDB_or_cntrl": "IEDB/controls",
-                "is_pos_cntrl": "Positive control",
-                "is_neg_cntrl": "Negative control",
-                "is_rand_cntrl": "Random control",
-            }
-        )
-        self.subgroups_order = (
-            subgroups_order
-            if (
-                isinstance(subgroups_order, list)
-                and all(isinstance(item, str) for item in subgroups_order)
-            )
-            else [
-                "Complete library",
-                "Aligent library",
-                "Twist library",  # 'Corona library',
-                "Metagenomics\nantigens",
-                "Human Autoantigens",
-                "Pathogenic strains",
-                "Probiotic strains",
-                "Antibody-coated\nstrains",
-                "Microbiota\nstrains",
-                "Flagellins",
-                "Infectious\npathogens",
-                "Epstein-Barr\nVirus",
-                "Toxin",
-                "Phages",
-                "Allergens",
-                "Influenza",
-                "Microbiota\ngenes",
-                "Secreted proteins",
-                "Membrane proteins",
-                "Predicted toxins",
-                "IEDB/controls",
-                "Positive control",
-                "Negative control",
-                "Random control",
-            ]
-        )
-        self.subgroups_to_include = (
-            subgroups_to_include
-            if (
-                isinstance(subgroups_to_include, list)
-                and all(isinstance(item, str) for item in subgroups_to_include)
-            )
-            else [
-                "all",
-                "is_ALIGENT",
-                "is_TWIST",  # 'is_CORONA',
-                "is_PNP",
-                "is_auto",
-                "is_patho",
-                "is_probio",
-                "is_IgA",
-                "is_MPA",
-                "is_bac_flagella",
-                "is_infect",
-                "is_EBV",
-                "is_toxin",
-                "is_phage",
-                "is_allergens",
-                "is_influenza",
-                "is_EM",
-                "signalp6_slow",
-                "is_topgraph_new_&_old",
-                "diamond_mmseqs_intersec_toxin",
-                "is_IEDB_or_cntrl",
-                "is_pos_cntrl",
-                "is_neg_cntrl",
-                "is_rand_cntrl",
-            ]
-        )
-        self.estimators_info = (
-            estimators_info
-            if isinstance(estimators_info, dict)
-            else {
-                "XGBClassifier": {
-                    "estimator_class": xgb.XGBClassifier,
-                    "estimator_kwargs": {
-                        "objective": "binary:logistic",
-                        "eval_metric": "auc",
-                        "random_state": self.random_state,
-                        "nthread": 1,
-                        "n_jobs": -1,
-                        "n_estimators": 150,
-                        "learning_rate": 0.1,
-                        "max_depth": 6,
-                    },
-                }
-            }
-        )
-        self.param_grid = (
-            param_grid
-            if isinstance(param_grid, dict)
-            else {
-                "XGBClassifier": {
-                    "n_estimators": [50, 100, 200, 500, 1000],
-                    "learning_rate": [0.01, 0.1, 0.3],  # Learning rate (eta)
-                    "max_depth": [4, 6, 8],  # Maximum tree depth for base learners
-                    # 'gamma': [0, 0.1, 0.3, 0.5],                              # Minimum loss reduction for a split
-                    "subsample": [
-                        0.6,
-                        0.8,
-                        1.0,
-                    ],  # Subsample ratio of the training instances
-                    "colsample_bytree": [
-                        0.6,
-                        0.8,
-                        1.0,
-                    ],  # Subsample ratio of columns when constructing each tree
-                    # 'reg_alpha': [0, 0.1, 0.5, 1.0],                          # L1 regularization term
-                    "reg_lambda": [1, 1.5, 2, 3],  # L2 regularization term
-                    # ,'booster': ['gbtree', 'dart']
-                }
-            }
-        )
-        self.subgroups_colors = (
-            subgroups_colors
-            if isinstance(subgroups_colors, dict)
-            else dict(
-                zip(
-                    self.subgroups_order,
-                    sns.color_palette()[0:4]
-                    + sns.color_palette("Set2", 12)[5:6]
-                    + sns.color_palette("Set3", 12)[9:10]
-                    + sns.color_palette()[8:10]
-                    + sns.color_palette()[5:6]
-                    + [sns.color_palette("Set2", 8)[i] for i in [1, 2, 6]]
-                    + sns.color_palette("Accent")[5:6]
-                    + sns.color_palette("Set3", 12)[0:1]
-                    + sns.color_palette("Set3", 12)[2:7]
-                    + sns.color_palette("Set2", 8)[0:1]
-                    + sns.color_palette("PRGn")[0:1]
-                    + sns.husl_palette(s=0.4),
-                )
-            )
-        )
-        self.additional_features_only_color = "black"
-        self.run_plates_only_color = "silver"
-        self.additional_features_run_plates_only_color = "gray"
+        values = dict(raw)
+        values.update({k: v for k, v in overrides.items() if v is not None})
+        for old, new in self._ALIASES.items():
+            if old in values and new not in values:
+                values[new] = values[old]
 
-        self.filters_metadata = (
-            filters_metadata if isinstance(filters_metadata, dict) else None
-        )  # Default to an empty dict
-        self.combined_filters_metadata = (
-            combined_filters_metadata
-            if (
-                isinstance(combined_filters_metadata, list)
-                and all(isinstance(item, dict) for item in combined_filters_metadata)
-            )
-            else None
-        )  # Default to an empty list
+        known = {f.name for f in fields(type(self))}
+        unknown = set(values) - known - set(self._ALIASES) - self._IGNORED_LEGACY_KEYS
+        if unknown:
+            raise ValueError(f"Unknown configuration keys: {sorted(unknown)}")
 
-        # Oligo Handler
-        self.transposed = transposed if isinstance(transposed, bool) else True
-        # Meta Handler
-        self.imputed = imputed if isinstance(imputed, bool) else False
-        # FeatureManager
-        self.fillna = fillna if isinstance(fillna, bool) else False
+        for f in fields(type(self)):
+            if f.name in values:
+                setattr(self, f.name, values[f.name])
+            elif f.default is not MISSING:
+                setattr(self, f.name, f.default)
+            elif f.default_factory is not MISSING:
+                setattr(self, f.name, f.default_factory())
 
-        # Performance validator
-        self.libraries_prefixes = (
-            libraries_prefixes
-            if (
-                isinstance(libraries_prefixes, list)
-                and all(isinstance(item, str) for item in libraries_prefixes)
-            )
-            else ["agilent", "corona2", "twist"]
-        )
-        self.cv_method = cv_method if cv_method in ("loo", "kfold") else "kfold"
-        self.split_train_test = (
-            split_train_test if isinstance(split_train_test, bool) else True
-        )
-        self.compute_feature_importance = (
-            compute_feature_importance
-            if isinstance(compute_feature_importance, bool)
-            else False
-        )
-        self.return_train = return_train if isinstance(return_train, bool) else True
-        self.return_test = return_test if isinstance(return_test, bool) else False
-        self.external_set = external_set if isinstance(external_set, bool) else False
-        self.tuning_parameters = (
-            tuning_parameters if isinstance(tuning_parameters, bool) else True
-        )
-        self.train_size = train_size if isinstance(train_size, (int, float)) else 0.8
-        self.k = k if isinstance(k, int) else 10
-        self.tuning_n_iter = tuning_n_iter if isinstance(tuning_n_iter, int) else 20
-        self.tuning_k = tuning_k if isinstance(tuning_k, int) else 3
+        self.config_file = path
+        self._normalise_paths(path.parent)
+        self._normalise_prefixes()
+        self._normalise_sample_file_settings()
+        self._validate()
+        self._update_group_metadata()
 
-        # must be set explicitly
-        self.config_file = config_file if isinstance(config_file, str) else None
-        # overwrite parameters present in yaml file
-        if self.config_file is not None:
-            if not (
-                self.config_file.endswith(".yaml") or self.config_file.endswith(".yml")
-            ):
-                raise ValueError(
-                    f"Config file '{self.config_file}' does not appear to be a YAML file (expected .yaml or .yml)."
-                )
-            try:
-                self.load_from_file(self.config_file)
-            except yaml.YAMLError as e:
-                raise ValueError(
-                    f"The config file '{self.config_file}' is not valid YAML. Error: {e}"
-                )
-        else:
-            raise ValueError("A YAML file must be provided")
-
-        # Validate that mandatory attributes are set
-        self.validate_mandatory_attributes()
-
-        # derived values
-        self.label_group_tests = "-".join(self.group_tests)
+    def _update_group_metadata(self) -> None:
+        """Rebuild values derived from the configured target-group order."""
         self.group_label_encoding = {
-            test: idx for idx, test in enumerate(self.group_tests)
+            label: index for index, label in enumerate(self.group_tests)
         }
-        self.predictions_dir = Path(self.data_dir) / "Predictions"
-        self.visualization_dir = Path(self.predictions_dir) / "Figures"
-        self.figures_dir = (
-            Path(self.visualization_dir) / f"figures_{self.label_group_tests}"
-        )
+        self.group_code_to_label = {
+            index: label for index, label in enumerate(self.group_tests)
+        }
+        self.label_group_tests = "-".join(map(str, self.group_tests))
 
-        # Ensure the directories exist
-        if not os.path.exists(self.predictions_dir):
-            os.makedirs(self.predictions_dir)
-        if not os.path.exists(self.visualization_dir):
-            os.makedirs(self.visualization_dir)
-        if not os.path.exists(self.figures_dir):
-            os.makedirs(self.figures_dir)
+    def set_group_tests(self, group_tests: Sequence[Any]) -> None:
+        """Replace target groups and refresh their positional encodings."""
+        if isinstance(group_tests, (str, bytes)) or not isinstance(
+                group_tests, Sequence
+        ):
+            raise TypeError("group_tests must be a sequence of at least two labels")
+        self.group_tests = list(group_tests)
+        self._validate_group_tests()
+        self._update_group_metadata()
 
-    def validate_mandatory_attributes(self):
-        """Validate that mandatory attributes are set and not None."""
-        mandatory_attributes = [
-            "metadata_dir",
-            "data_dir",
-            "project",
-            "lib_meta_data",
-            "group_tests",
-        ]
-        for attr in mandatory_attributes:
-            if getattr(self, attr) is None:
-                raise ValueError(
-                    f"The mandatory attribute '{attr}' is not set or is None."
-                )
+    def _normalise_paths(self, config_dir: Path) -> None:
+        """Resolve every input filename using the configuration directory.
 
-    def set_attribute(self, attr_name, value):
-        if hasattr(self, attr_name):
-            current_value = getattr(self, attr_name, value)
-            # Only perform type checking if the attribute already has a non-None value
+        Absolute paths are preserved, ``~`` is expanded, and relative paths are
+        anchored to the YAML file rather than to the process working directory.
+        """
+
+        def resolve(
+                value: str | Path | None,
+        ) -> Path | None:
+            if value is None:
+                return None
+
+            path = Path(value).expanduser()
+
+            if not path.is_absolute():
+                path = config_dir / path
+
+            return path.resolve()
+
+        data_input = resolve(getattr(self, "data_input", None))
+
+        metadata_input = resolve(getattr(self, "metadata_input", None))
+
+        if data_input is None:
+            raise ValueError("Missing mandatory configuration key: 'data_input'")
+
+        if metadata_input is None:
+            raise ValueError("Missing mandatory configuration key: 'metadata_input'")
+
+        # The type checker now knows these are Path, not Path | None.
+        self.data_input = data_input
+        self.metadata_input = metadata_input
+
+        # This attribute is allowed to be Path | None.
+        self.lib_metadata_input = resolve(getattr(self, "lib_metadata_input", None))
+
+    def _normalise_prefixes(self) -> None:
+        prefixes = self.peptide_prefixes
+        if isinstance(prefixes, (str, bytes)) or not isinstance(prefixes, Sequence):
+            raise TypeError("peptide_prefixes must be a sequence of strings")
+
+        normalised: list[str] = []
+        for prefix in prefixes:
+            if not isinstance(prefix, str) or not prefix.strip():
+                raise ValueError("peptide_prefixes cannot contain empty values")
+            clean = prefix.strip()
+            clean = clean if clean.endswith("_") else f"{clean}_"
+            if clean not in normalised:
+                normalised.append(clean)
+        if not normalised:
+            raise ValueError("peptide_prefixes cannot be empty")
+        self.peptide_prefixes = normalised
+
+    def _normalise_sample_file_settings(self) -> None:
+        mode = str(self.data_input_mode).strip().lower().replace("_", "-")
+        if mode not in {"auto", "matrix", "sample-files"}:
+            raise ValueError(
+                "data_input_mode must be 'auto', 'matrix', or 'sample-files'"
+            )
+        self.data_input_mode = mode
+
+        patterns = self.sample_file_patterns
+        if isinstance(patterns, (str, bytes)) or not isinstance(patterns, Sequence):
+            raise TypeError("sample_file_patterns must be a sequence of glob patterns")
+        normalised_patterns = []
+        for pattern in patterns:
+            if not isinstance(pattern, str) or not pattern.strip():
+                raise ValueError("sample_file_patterns cannot contain empty values")
+            clean = pattern.strip()
+            if clean not in normalised_patterns:
+                normalised_patterns.append(clean)
+        if not normalised_patterns:
+            raise ValueError("sample_file_patterns cannot be empty")
+        self.sample_file_patterns = normalised_patterns
+
+        if (
+                not isinstance(self.sample_file_peptide_column, str)
+                or not self.sample_file_peptide_column.strip()
+        ):
+            raise ValueError("sample_file_peptide_column must be a non-empty string")
+        self.sample_file_peptide_column = self.sample_file_peptide_column.strip()
+
+        if self.sample_name_regex is not None:
             if (
-                current_value is not None
-                and not isinstance(value, type(current_value))
-                and not isinstance(current_value, Path)
+                    not isinstance(self.sample_name_regex, str)
+                    or not self.sample_name_regex
+            ):
+                raise ValueError("sample_name_regex must be a non-empty string or null")
+            try:
+                re.compile(self.sample_name_regex)
+            except re.error as error:
+                raise ValueError(f"Invalid sample_name_regex: {error}") from error
+
+    def get_data_input_mode(self) -> str:
+        """Return the effective mode after inspecting an automatic input path."""
+        if self.data_input_mode == "auto":
+            return "sample-files" if self.data_input.is_dir() else "matrix"
+        return self.data_input_mode
+
+    def _validate_group_tests(self) -> None:
+        if not isinstance(self.group_tests, (list, tuple)) or len(self.group_tests) < 2:
+            raise ValueError("group_tests must contain at least two target labels")
+        self.group_tests = list(self.group_tests)
+        if any(pd.isna(label) for label in self.group_tests):
+            raise ValueError("group_tests cannot contain missing values")
+        if len(set(self.group_tests)) != len(self.group_tests):
+            raise ValueError("group_tests cannot contain duplicate labels")
+
+    def _validate(self) -> None:
+        missing = [
+            name
+            for name in ("data_input", "metadata_input", "group_tests")
+            if not getattr(self, name, None)
+        ]
+        if missing:
+            raise ValueError(f"Missing mandatory configuration keys: {missing}")
+        self._validate_group_tests()
+        if isinstance(self.extra_features_to_include, (str, bytes)) or not isinstance(
+                self.extra_features_to_include, Sequence
+        ):
+            raise TypeError("extra_features_to_include must be a sequence of names")
+        if not all(
+                isinstance(column, str) and column
+                for column in self.extra_features_to_include
+        ):
+            raise ValueError("extra_features_to_include contains an invalid name")
+        self.extra_features_to_include = list(self.extra_features_to_include)
+
+        if self.filters_metadata is not None and not isinstance(
+                self.filters_metadata, Mapping
+        ):
+            raise TypeError("filters_metadata must be a mapping or null")
+        if self.filters_metadata is not None:
+            self.filters_metadata = dict(self.filters_metadata)
+
+        if self.combined_filters_metadata is not None:
+            if isinstance(
+                    self.combined_filters_metadata, (str, bytes)
+            ) or not isinstance(self.combined_filters_metadata, Sequence):
+                raise TypeError("combined_filters_metadata must be a sequence or null")
+            if not all(
+                    isinstance(condition, Mapping)
+                    for condition in self.combined_filters_metadata
             ):
                 raise TypeError(
-                    f"Expected value of type {type(current_value)} for attribute '{attr_name}', but got {type(value)}"
+                    "Every combined_filters_metadata condition must be a mapping"
                 )
-            # setattr(self, attr_name, value)
-            setattr(
-                self,
-                attr_name,
-                (
-                    Path(value)
-                    if attr_name == "metadata_dir" or attr_name == "data_dir"
-                    else value
-                ),
+            self.combined_filters_metadata = [
+                dict(condition) for condition in self.combined_filters_metadata
+            ]
+
+        if self.oligo_filter_mode not in {"all", "any"}:
+            raise ValueError("oligo_filter_mode must be either 'all' or 'any'")
+        if self.oligo_filters is not None and not isinstance(
+                self.oligo_filters, Mapping
+        ):
+            raise TypeError("oligo_filters must be a mapping or null")
+        if self.oligo_filters is not None:
+            self.oligo_filters = dict(self.oligo_filters)
+        if not isinstance(self.param_grid, Mapping):
+            raise TypeError("param_grid must be a mapping")
+        if not isinstance(self.classification, Mapping):
+            raise TypeError("classification must be a mapping")
+
+        self.param_grid = dict(self.param_grid)
+        self.classification = dict(self.classification)
+
+        # if not isinstance(self.survival, Mapping):
+        #    raise TypeError("survival must be a mapping")
+
+        # self.survival = dict(self.survival)
+
+        if self.lib_col_peptide_name is not None and (
+                not isinstance(self.lib_col_peptide_name, str)
+                or not self.lib_col_peptide_name.strip()
+        ):
+            raise ValueError("lib_col_peptide_name must be a non-empty string or null")
+        if self.lib_col_peptide_name is not None:
+            self.lib_col_peptide_name = self.lib_col_peptide_name.strip()
+
+        if self.metadata_input.suffix.lower() not in SUPPORTED_TABLE_EXTENSIONS:
+            raise ValueError(
+                f"Unsupported metadata_input extension: {self.metadata_input.suffix}"
             )
 
-        else:
-            raise AttributeError(f"Config has no attribute named '{attr_name}'")
+        if (
+                self.get_data_input_mode() == "matrix"
+                and self.data_input.suffix.lower() not in SUPPORTED_TABLE_EXTENSIONS
+        ):
+            raise ValueError(
+                f"Unsupported data_input extension: {self.data_input.suffix}. "
+                "For a manifest or directory of per-sample files, set "
+                "data_input_mode: sample-files."
+            )
+        if (
+                self.lib_metadata_input is not None
+                and self.lib_metadata_input.suffix.lower()
+                not in SUPPORTED_LIBRARY_METADATA_EXTENSIONS
+        ):
+            raise ValueError(
+                "Unsupported lib_metadata_input extension: "
+                f"{self.lib_metadata_input.suffix}"
+            )
 
-    def process_estimators_info(self):
+    def get_bayesian_param_grid(self, model_type: str) -> dict[str, Any]:
+        """Convert one model's YAML search-space specifications to skopt spaces.
+
+        This method intentionally leaves ``self.param_grid`` unchanged so the
+        same Config instance can provide grids for more than one estimator.
         """
-        Converts any 'estimator_class' entries from strings to actual classes.
-        """
+        try:
+            from skopt.space import Categorical, Integer, Real
+        except ImportError as error:
+            raise ImportError(
+                "Bayesian grid conversion requires scikit-optimize. "
+                "Install it with `pip install scikit-optimize`."
+            ) from error
 
-        def get_class_from_string(class_path: str):
-            module_name, class_name = class_path.rsplit(".", 1)
-            module = importlib.import_module(module_name)
-            return getattr(module, class_name)
+        if model_type not in self.param_grid:
+            available = sorted(self.param_grid)
+            raise KeyError(
+                f"No parameter grid for '{model_type}'. Available grids: {available}"
+            )
 
-        if hasattr(self, "estimators_info") and isinstance(self.estimators_info, dict):
-            for name, info in self.estimators_info.items():
-                class_str = info.get("estimator_class")
-                if class_str and isinstance(class_str, str):
-                    info["estimator_class"] = get_class_from_string(class_str)
-
-    def get_bayesian_param_grid_from_dict_items(self, model_type: str = "xgboost"):
-        # Expect structure like param_grid: { xgboost: { ... }, random_forest: { ... } }
-        raw_pg = self.param_grid.get(model_type)
-        if raw_pg is None:
-            raise ValueError(f"No param_grid found for model type '{model_type}'")
-        pg = {}
-        for name, spec in raw_pg.items():
-            t = spec["type"].lower()
-            if t == "integer":
-                pg[name] = Integer(spec["low"], spec["high"])
-            elif t == "real":
-                pg[name] = Real(
-                    spec["low"], spec["high"], prior=spec.get("prior", "uniform")
+        converted: dict[str, Any] = {}
+        for parameter, specification in self.param_grid[model_type].items():
+            if not isinstance(specification, Mapping):
+                raise TypeError(
+                    f"Grid specification for '{parameter}' must be a mapping"
                 )
-            elif t == "categorical":
-                pg[name] = Categorical(spec["categories"])
-            else:
-                raise ValueError(f"Unknown type '{t}' for {name}")
-        self.param_grid = pg
-
-    def load_from_file(self, config_file):
-        with open(config_file, "r") as f:
-            config_data = yaml.safe_load(f)
-
-        # Only update attributes that exist in config_data, leaving all other defaults intact.
-        for key, value in config_data.items():
-            # If the attribute exists in the class, override it.
-            # This ensures we only update keys present in the config.
-            self.set_attribute(key, value)
-
-        self.process_estimators_info()
-
-    def _set_string_attribute(self, attr_name, value):
-        if not isinstance(value, str):
-            raise ValueError(f"{attr_name} must be a string.")
-        setattr(self, attr_name, value)
-
-        # Special case: if DATA_DIR is updated, automatically set PREDICTIONS_DIR
-        if attr_name == "data_dir":
-            self.predictions_dir = Path(self.data_dir) / "Predictions"
-
-    def _set_list_string_attribute(self, attr_name, value):
-        if not isinstance(value, list) or not all(
-            isinstance(item, str) for item in value
-        ):
-            raise ValueError(f"{attr_name} must be a list of strings.")
-        setattr(self, attr_name, value)
-
-    def _set_list_boolean_attribute(self, attr_name, value):
-        if not isinstance(value, list) or not all(
-            isinstance(item, bool) for item in value
-        ):
-            raise ValueError(
-                f"{attr_name} must be a list of booleans and can only contain [True, False], [True], or [False]."
-            )
-        if set(value) not in [{True}, {False}, {True, False}]:
-            raise ValueError(
-                f"{attr_name} must only be [True, False], [True], or [False]."
-            )
-        setattr(self, attr_name, value)
-
-    @staticmethod
-    def _is_str_or_list_of_str(x):
-        if isinstance(x, str):
-            return True
-        if isinstance(x, list) and all(isinstance(item, str) for item in x):
-            return True
-        return False
-
-    def _set_dict_string_attribute(self, attr_name, value):
-        if not isinstance(value, dict):
-            raise ValueError(f"The attribute '{attr_name}' must be a dictionary.")
-
-        # Check if all keys and values are strings
-        if not all(
-            isinstance(k, str) and self._is_str_or_list_of_str(v)
-            for k, v in value.items()
-        ):
-            raise TypeError(
-                f"The attribute '{attr_name}' must be a dictionary with string keys and string values."
-            )
-        setattr(self, attr_name, value)
-
-    def _set_list_of_dict_string_attribute(self, attr_name, value):
-        if not isinstance(value, list):
-            raise ValueError(
-                f"The attribute '{attr_name}' must be a list of dictionaries."
-            )
-
-        if not all(isinstance(item, dict) for item in value):
-            raise ValueError(
-                f"All elements in the attribute '{attr_name}' must be dictionaries."
-            )
-
-        # Check if all keys and values in each dictionary are strings
-        for dictionary in value:
-            if not all(
-                isinstance(k, str) and isinstance(v, str) for k, v in dictionary.items()
-            ):
+            space_type = str(specification.get("type", "")).lower()
+            try:
+                if space_type == "integer":
+                    converted[parameter] = Integer(
+                        specification["low"], specification["high"]
+                    )
+                elif space_type == "real":
+                    converted[parameter] = Real(
+                        specification["low"],
+                        specification["high"],
+                        prior=specification.get("prior", "uniform"),
+                    )
+                elif space_type == "categorical":
+                    converted[parameter] = Categorical(specification["categories"])
+                else:
+                    raise ValueError(
+                        f"Unknown search-space type '{space_type}' for '{parameter}'"
+                    )
+            except KeyError as error:
                 raise ValueError(
-                    f"All dictionaries in the attribute '{attr_name}' must have string keys and string values."
-                )
-        setattr(self, attr_name, value)
+                    f"Incomplete grid specification for '{parameter}': "
+                    f"missing {error.args[0]!r}"
+                ) from error
+        return converted
 
-    # Using the helper function for each setter
-    def set_metadata_dir(self, metadata_dir):
-        self._set_string_attribute("metadata_dir", metadata_dir)
-
-    def set_data_dir(self, data_dir):
-        self._set_string_attribute("data_dir", data_dir)
-
-    def set_visualization_dir(self, visualization_dir):
-        self._set_string_attribute("visualization_dir", visualization_dir)
-        self.figures_dir = Path(visualization_dir) / f"figures_{self.label_group_tests}"
-        os.makedirs(self.figures_dir, exist_ok=True)
-
-    def set_project(self, project):
-        self._set_string_attribute("project", project)
-
-    def set_lib_meta_data(self, lib_meta_data):
-        self._set_string_attribute("lib_meta_data", lib_meta_data)
-
-    def set_column_sample_name(self, col_sample_name):
-        self._set_string_attribute("col_sample_name", col_sample_name)
-
-    def set_column_target(self, col_target):
-        self._set_string_attribute("col_target", col_target)
-
-    def set_column_predict(self, col_predict):
-        self._set_string_attribute("col_predict", col_predict)
-
-    def set_group_tests(self, group_tests):
-        self._set_list_string_attribute("group_tests", group_tests)
-        self.label_group_tests = "-".join(group_tests)
-        self.group_label_encoding = {test: idx for idx, test in enumerate(group_tests)}
-
-    def set_extra_features(self, extra_features):
-        self._set_list_string_attribute("extra_features_to_include", extra_features)
-
-    def set_data_types(self, data_types):
-        self._set_list_string_attribute("data_types", data_types)
-
-    def set_prevalence_thresholds_min(self, prevalence_thresholds_min):
-        if not isinstance(prevalence_thresholds_min, list):
-            raise ValueError(
-                "prevalence_thresholds must be a list of integers/float between 0-100."
-            )
-        setattr(self, "prevalence_thresholds_min", prevalence_thresholds_min)
-
-    def set_prevalence_thresholds_max(self, prevalence_thresholds_max):
-        if not isinstance(prevalence_thresholds_max, list):
-            raise ValueError(
-                "prevalence_thresholds must be a list of integers/float between 0-100."
-            )
-        setattr(self, "prevalence_thresholds_max", prevalence_thresholds_max)
-
-    def set_with_oligos_options(self, value):
-        self._set_list_boolean_attribute("with_oligos_options", value)
-
-    def set_with_additional_features_options(self, value):
-        self._set_list_boolean_attribute("with_additional_features_options", value)
-
-    def set_with_run_plates_options(self, value):
-        self._set_list_boolean_attribute("with_run_plates_options", value)
-
-    def set_filter_by_entropy(self, value):
-        self._set_list_boolean_attribute("filter_by_entropy", value)
-
-    def set_filter_by_correlation(self, value):
-        self._set_list_boolean_attribute("filter_by_correlation", value)
-
-    def set_filters_metadata(self, value):
-        self._set_dict_string_attribute("filters_metadata", value)
-
-    def set_combined_filters_metadata(self, value):
-        self._set_list_of_dict_string_attribute("combined_filters_metadata", value)
-
-    def get_attribute(self, attr_name):
-        if hasattr(self, attr_name):
-            return getattr(self, attr_name)
-        else:
-            raise AttributeError(f"Config has no attribute named '{attr_name}'")
+    def get_bayesian_param_grid_from_dict_items(
+            self, model_type: str = "xgboost"
+    ) -> dict[str, Any]:
+        """Old compatibility wrapper for existing code; converts the grid in place."""
+        converted = self.get_bayesian_param_grid(model_type)
+        self.param_grid = converted
+        return converted
 
 
 class MetadataHandler:
-    def __init__(self, config):
+    def __init__(self, config: Config):
         self.config = config
-        self.imputed = (
-            self.config.imputed
-        )  # imputed if isinstance(imputed, bool) else False
-
-    def set_imputed(self, imputed):
-        if isinstance(imputed, bool):
-            self.imputed = imputed
-        else:
-            raise ValueError("The imputed parameter must be a boolean.")
+        self._metadata: pd.DataFrame | None = None
 
     @staticmethod
-    def filter_metadata(ind_meta, filters_metadata):
-        """
-        Filters the metadata DataFrame based on specified filter conditions.
-        """
-        if not isinstance(filters_metadata, dict):
-            raise ValueError(
-                f"Value '{filters_metadata}' must be a dictionary "
-                f"with key as column name and value as the attributes to subset"
-            )
+    def _encode_sex(value: Any) -> Any:
+        """Encode common Sex/Gender representations while preserving unknowns."""
+        if pd.isna(value):
+            return value
 
-        for column, value in filters_metadata.items():
-            if column in ind_meta.columns:
-                if isinstance(value, list):
-                    ind_meta = ind_meta[ind_meta[column].isin(value)]
-                else:
-                    ind_meta = ind_meta[ind_meta[column] == value]
-            else:
-                raise ValueError(f"Column '{column}' does not exist in the metadata.")
+        if isinstance(value, str):
+            normalised = value.strip().lower()
 
-        return ind_meta
+            mapping = {
+                "f": 0,
+                "female": 0,
+                "m": 1,
+                "male": 1,
+                "0": 0,
+                "1": 1,
+            }
 
-    @staticmethod
-    def apply_combined_filters_metadata(ind_meta, combined_filters_metadata):
-        """
-        Applies combined filtering conditions to the metadata DataFrame.
-        """
-        if not isinstance(combined_filters_metadata, list):
-            raise ValueError(
-                f"Value '{combined_filters_metadata}' must be a list of dictionaries. "
-                f"Each dictionary with key as column name and value as the attributes to subset"
-            )
+            return mapping.get(normalised, value)
 
-        combined_filter = pd.Series([False] * len(ind_meta), index=ind_meta.index)
-        for condition in combined_filters_metadata:
-            temp_filter = pd.Series([True] * len(ind_meta), index=ind_meta.index)
-            for column, value in condition.items():
-                if column in ind_meta.columns:
-                    if isinstance(value, list):
-                        temp_filter &= ind_meta[column].isin(value)
-                    else:
-                        temp_filter &= ind_meta[column] == value
-                else:
-                    raise ValueError(
-                        f"Column '{column}' does not exist in the metadata."
-                    )
-            combined_filter |= temp_filter
-        return ind_meta[combined_filter]
+        if value in (0, 1):
+            return int(value)
 
-    def get_individuals_metadata_df(self):
-        # Load metadata based on file type
-        if self.config.meta_typefile == "excel":
-            ind_meta = pd.read_excel(
-                Path(self.config.metadata_dir) / f"{self.config.project}_metadata.xlsx",
-                sheet_name=0,
-                index_col=self.config.col_sample_name,
-            )
-        elif self.config.meta_typefile == "csv":
-            ind_meta = pd.read_csv(
-                Path(self.config.metadata_dir) / f"{self.config.project}_metadata.csv",
-                index_col=self.config.col_sample_name,
-                low_memory=False,
-            )
-        else:
-            raise ValueError(
-                f"Invalid file type: {self.config.meta_typefile}. Expected 'csv' or 'excel'."
-            )
+        return value
 
-        # Drop unnamed numeric columns
-        unnamed_col = ind_meta.columns[ind_meta.columns.str.match(r"^Unnamed")].tolist()
-        if unnamed_col:
-            # Check if the unnamed column contains a numeric range from 0 to number of rows - 1
-            col_name = unnamed_col[0]
-            if (
-                ind_meta[col_name].dtype.kind in "iufc"
-                and (ind_meta[col_name] == range(len(ind_meta))).all()
-            ):
-                ind_meta = ind_meta.drop(columns=[col_name])
+    def get_individuals_metadata_df(self, *, refresh: bool = False) -> pd.DataFrame:
+        if self._metadata is not None and not refresh:
+            return self._metadata.copy()
 
-        # Drop columns with 'Sample' or 'barcode'
-        columns_to_drop = ind_meta.columns[
-            ind_meta.columns.str.contains(r"Sample|barcode", case=False)
-        ].tolist()
-        if columns_to_drop:
-            ind_meta = ind_meta.drop(columns=columns_to_drop)
+        df = _read_table(self.config.metadata_input)
 
-        # if self.config.group_tests  is None:
-        #    self.config.group_tests = ind_meta[self.config.COL_TARGET].unique()
-        # ind_meta = ind_meta[ind_meta[self.config.COL_TARGET].isin(self.config.group_tests )]
+        unnamed_columns = df.columns[df.columns.astype(str).str.match(r"^Unnamed")]
 
-        # Rename 'Gender' to 'Sex' and encode values if necessary
-        if "Gender" in ind_meta.columns and "Sex" not in ind_meta.columns:
-            ind_meta = ind_meta.rename(columns={"Gender": "Sex"})
-        if "Sex" in ind_meta.columns and ind_meta["Sex"].isin(["F", "M"]).any():
-            ind_meta["Sex"] = (
-                ind_meta["Sex"].replace(self.config.sex_encoding).astype(int)
-            )
+        if len(unnamed_columns) > 0:
+            df = df.drop(columns=unnamed_columns)
+
+        sample = self.config.col_sample_name
+
+        if sample in df.columns:
+            df = df.set_index(sample)
+        elif df.index.name != sample:
+            raise KeyError(f"Sample column '{sample}' not found in metadata")
+
+        df.index = df.index.astype(str)
+        df.index.name = sample
+        if df.index.has_duplicates:
+            duplicated = df.index[df.index.duplicated()].unique().tolist()[:5]
+            raise ValueError(f"Metadata contains duplicate sample IDs: {duplicated}")
+
+        if "Sex" in df.columns:
+            df["Sex"] = df["Sex"].map(self._encode_sex)
+
+        if "Gender" in df.columns:
+            df["Gender"] = df["Gender"].map(self._encode_sex)
+            # Keep the original Gender column so it remains a valid configured
+            # clinical feature, while retaining Sex as a compatibility alias.
+            if "Sex" not in df.columns:
+                df["Sex"] = df["Gender"]
 
         if self.config.filters_metadata:
-            ind_meta = self.filter_metadata(ind_meta, self.config.filters_metadata)
-        # Apply combined conditions if specified
-        elif self.config.combined_filters_metadata:
-            ind_meta = self.apply_combined_filters_metadata(
-                ind_meta, self.config.combined_filters_metadata
+            df = self._apply_and_filter(df, self.config.filters_metadata)
+
+        if self.config.combined_filters_metadata:
+            masks = [
+                self._condition_mask(df, condition)
+                for condition in self.config.combined_filters_metadata
+            ]
+
+            combined_mask = pd.concat(
+                masks,
+                axis=1,
+            ).any(axis=1)
+
+            df = df.loc[combined_mask, :].copy()
+
+        target = self.config.col_target
+        if target not in df.columns:
+            raise KeyError(f"Target column '{target}' not found in metadata")
+        df = self._select_target_groups(df)
+
+        self._metadata = df.copy()
+
+        return df
+
+    def _select_target_groups(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Select configured classes from textual or already encoded targets.
+
+        Text targets are matched directly to ``group_tests``. Numeric targets
+        use positional codes, so group_tests[0] is class 0, group_tests[1] is
+        class 1, and so forth.
+        """
+        target = self.config.col_target
+        values = df[target]
+
+        direct_mask = values.isin(self.config.group_tests)
+        numeric = pd.to_numeric(values, errors="coerce")
+        integer_like = numeric.notna() & np.isclose(numeric, numeric.round())
+        valid_codes = set(range(len(self.config.group_tests)))
+        encoded_mask = integer_like & numeric.isin(valid_codes)
+        encoded_only_mask = encoded_mask & ~direct_mask
+
+        selected_mask = direct_mask | encoded_only_mask
+        selected = df.loc[selected_mask].copy()
+        if encoded_only_mask.any():
+            # A CSV containing mixed textual labels and numeric codes may be
+            # inferred as a pandas StringDtype column. Cast only the selected
+            # target column to object before assigning integers so this remains
+            # compatible with both pandas 2.x and the stricter pandas 3.x.
+            selected[target] = selected[target].astype(object)
+            encoded_index = df.index[np.asarray(encoded_only_mask, dtype=bool)]
+            selected.loc[encoded_index, target] = numeric.loc[encoded_index].astype(int)
+
+        if direct_mask.any() and encoded_only_mask.any():
+            representation = "labels and numeric codes"
+        elif direct_mask.any():
+            representation = "labels"
+        else:
+            representation = "numeric codes"
+
+        if selected.empty:
+            available = values.dropna().drop_duplicates().tolist()
+            raise ValueError(
+                "No metadata rows remain after target/filter selection. "
+                f"Configured group_tests={self.config.group_tests!r}; "
+                f"expected either those labels or numeric codes "
+                f"{list(range(len(self.config.group_tests)))!r}; "
+                f"available values={available!r}; target column={target!r}."
             )
 
-        return ind_meta
+        selected.attrs["target_representation"] = representation
+        return selected
 
-    def get_additional_features_df(self, **impute_kwargs):
-        ind_meta_df = self.get_individuals_metadata_df()[
-            self.config.extra_features_to_include
-        ]
-        if self.imputed:
-            imputer = SimpleImputer(**impute_kwargs)
-            ind_meta_df = pd.DataFrame(
-                data=imputer.fit_transform(ind_meta_df),
-                columns=ind_meta_df.columns,
-                index=ind_meta_df.index,
+    @staticmethod
+    def _condition_mask(df: pd.DataFrame, condition: Mapping[str, Any]) -> pd.Series:
+        mask = pd.Series(True, index=df.index)
+        for column, accepted in condition.items():
+            if column not in df.columns:
+                raise KeyError(f"Metadata filter column '{column}' not found")
+            values = (
+                list(accepted)
+                if isinstance(accepted, Sequence)
+                   and not isinstance(accepted, (str, bytes))
+                else [accepted]
             )
-        return ind_meta_df
+            mask &= df[column].isin(values)
+        return mask
 
-    def get_run_plates_df(self):
-        meta_df = self.get_individuals_metadata_df().reset_index()
-        meta_df["Run_Plate"] = meta_df[self.config.col_sample_name].str.extract(
-            r"(^R\d+P\d+)"
-        )
-        run_plates_df = meta_df[[self.config.col_sample_name, "Run_Plate"]]
+    def _apply_and_filter(
+            self, df: pd.DataFrame, condition: Mapping[str, Any]
+    ) -> pd.DataFrame:
+        return df.loc[self._condition_mask(df, condition)]
 
-        # Perform one-hot encoding on the extracted Run_Plate column
-        return pd.get_dummies(
-            run_plates_df, columns=["Run_Plate"], prefix="Run_Plate", dtype=int
-        ).set_index([self.config.col_sample_name])
+    def get_additional_features_df(self) -> pd.DataFrame:
+        """Return unmodified clinical features for pipeline-level preprocessing."""
+        columns = self.config.extra_features_to_include
+        metadata = self.get_individuals_metadata_df()
+        missing = sorted(set(columns) - set(metadata.columns))
+        if missing:
+            raise KeyError(f"Additional metadata features not found: {missing}")
+        return metadata.loc[:, columns].copy()
 
-    def get_additional_features_run_plates_df(self, **impute_kwargs):
-        ind_meta_df = self.get_additional_features_df(**impute_kwargs)
-        run_plate_df = self.get_run_plates_df()
-        return pd.merge(
-            ind_meta_df,
-            run_plate_df,
-            left_on=self.config.col_sample_name,
-            right_on=self.config.col_sample_name,
-        )
+
+@dataclass(frozen=True)
+class _SampleFileSpec:
+    path: Path
+    sample_name: str | None = None
 
 
 class OligosHandler:
-    def __init__(self, config, data_type=None):
+    def __init__(self, config: Config):
         self.config = config
-        self.data_type = data_type if isinstance(data_type, str) else "exist"
-        self.transposed = self.config.transposed
+        self._oligos: pd.DataFrame | None = None
 
-    def set_transposed(self, transposed):
-        if isinstance(transposed, bool):
-            self.transposed = transposed
+    def get_oligos_df(self, *, refresh: bool = False) -> pd.DataFrame:
+        if self._oligos is not None and not refresh:
+            return self._oligos.copy()
+
+        if self.config.get_data_input_mode() == "sample-files":
+            df = self._build_presence_absence_df()
         else:
-            raise ValueError("transposed must be a boolean.")
+            df = _read_table(self.config.data_input, index_col=0)
+            if self.config.transposed:
+                df = df.T
 
-    def set_data_type(self, data_type):
-        if isinstance(data_type, str):
-            self.data_type = data_type
-        else:
-            raise ValueError("data_type must be a str.")
-
-    def get_oligos_df(self):
-        if self.data_type not in ["fold", "exist", "p_val"]:
+        df.index = df.index.astype(str)
+        df.index.name = self.config.col_sample_name
+        df.columns = df.columns.astype(str)
+        if df.index.has_duplicates:
+            raise ValueError("Peptide data contains duplicate sample IDs")
+        if df.columns.has_duplicates:
+            duplicated = df.columns[df.columns.duplicated()].unique().tolist()[:5]
             raise ValueError(
-                f"Invalid file type: {self.data_type}. Expected types: 'fold', 'exist', or 'p_val'."
+                f"Peptide data contains duplicate peptide IDs: {duplicated}"
             )
-        oligos_df = pd.read_csv(
-            Path(self.config.data_dir) / f"{self.data_type}.csv",
-            index_col=0,
-            low_memory=False,
-        )
-        return oligos_df.T if self.transposed else oligos_df
+        self._oligos = df.copy()
+        return df
 
-    def get_oligos_metadata_df(self):
-        file_path = Path(self.config.metadata_dir) / self.config.lib_meta_data
-        if file_path.suffix == ".pkl":
-            df = pd.read_pickle(file_path)
-        elif file_path.suffix == ".csv":
-            df = pd.read_csv(file_path)
+    def _build_presence_absence_df(self) -> pd.DataFrame:
+        """Combine per-sample enrichment tables into a dense 0/1 matrix."""
+        file_specs = self._discover_sample_files()
+        sample_names: list[str] = []
+        peptide_sets: list[set[str]] = []
+        sample_sources: dict[str, Path] = {}
+
+        for spec in file_specs:
+            sample_name = self._sample_name(spec)
+            if sample_name in sample_sources:
+                raise ValueError(
+                    f"Duplicate sample name {sample_name!r} derived from "
+                    f"{sample_sources[sample_name]} and {spec.path}"
+                )
+            sample_sources[sample_name] = spec.path
+            sample_names.append(sample_name)
+            peptide_sets.append(self._read_sample_peptides(spec.path))
+
+        peptide_ids = sorted(set().union(*peptide_sets))
+        if not peptide_ids:
+            raise ValueError(
+                "No peptide IDs were found across the configured sample files"
+            )
+
+        peptide_positions = {
+            peptide_id: position for position, peptide_id in enumerate(peptide_ids)
+        }
+        matrix = np.zeros(
+            (len(sample_names), len(peptide_ids)),
+            dtype=np.uint8,
+        )
+        for row, sample_peptides in enumerate(peptide_sets):
+            positions = [
+                peptide_positions[peptide_id] for peptide_id in sample_peptides
+            ]
+            matrix[row, positions] = 1
+
+        return pd.DataFrame(
+            matrix,
+            index=pd.Index(sample_names, name=self.config.col_sample_name),
+            columns=peptide_ids,
+        )
+
+    def _discover_sample_files(self) -> list[_SampleFileSpec]:
+        input_path = self.config.data_input
+        if input_path.is_dir():
+            return self._discover_sample_files_in_directory(input_path)
+        if input_path.is_file():
+            return self._read_sample_manifest(input_path)
+        raise FileNotFoundError(
+            "Per-sample data_input must be an existing directory or manifest: "
+            f"{input_path}"
+        )
+
+    def _discover_sample_files_in_directory(
+            self,
+            directory: Path,
+    ) -> list[_SampleFileSpec]:
+        paths: dict[Path, None] = {}
+        for pattern in self.config.sample_file_patterns:
+            for path in directory.glob(pattern):
+                if path.is_file():
+                    paths[path.resolve()] = None
+
+        ordered_paths = sorted(paths, key=str)
+        if not ordered_paths:
+            raise FileNotFoundError(
+                f"No sample files in {directory} matched patterns "
+                f"{self.config.sample_file_patterns!r}"
+            )
+        return [_SampleFileSpec(path=path) for path in ordered_paths]
+
+    def _read_sample_manifest(self, manifest: Path) -> list[_SampleFileSpec]:
+        """Read PATH or SAMPLE_NAME<TAB>PATH entries from a UTF-8 text file."""
+        specs: list[_SampleFileSpec] = []
+        first_entry = True
+        with manifest.open(encoding="utf-8") as handle:
+            for line_number, raw_line in enumerate(handle, start=1):
+                stripped = raw_line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+
+                fields = [field.strip() for field in raw_line.rstrip().split("\t")]
+                if first_entry and self._is_manifest_header(fields):
+                    first_entry = False
+                    continue
+                first_entry = False
+
+                if len(fields) == 1:
+                    sample_name = None
+                    path_text = fields[0]
+                elif len(fields) == 2:
+                    sample_name, path_text = fields
+                    if not sample_name:
+                        raise ValueError(
+                            f"Empty sample name in {manifest} line {line_number}"
+                        )
+                else:
+                    raise ValueError(
+                        f"Manifest {manifest} line {line_number} must contain "
+                        "PATH or SAMPLE_NAME<TAB>PATH"
+                    )
+
+                if not path_text:
+                    raise ValueError(
+                        f"Empty sample-file path in {manifest} line {line_number}"
+                    )
+                path = Path(path_text).expanduser()
+                if not path.is_absolute():
+                    path = manifest.parent / path
+                specs.append(
+                    _SampleFileSpec(
+                        path=path.resolve(),
+                        sample_name=sample_name,
+                    )
+                )
+
+        if not specs:
+            raise ValueError(f"Sample-file manifest is empty: {manifest}")
+        return specs
+
+    @staticmethod
+    def _is_manifest_header(fields: list[str]) -> bool:
+        normalised = [field.lower() for field in fields]
+        return normalised in [
+            ["path"],
+            ["file"],
+            ["file_path"],
+            ["sample_name", "path"],
+            ["sample", "path"],
+            ["sample_name", "file_path"],
+        ]
+
+    def _sample_name(self, spec: _SampleFileSpec) -> str:
+        if spec.sample_name is not None:
+            return spec.sample_name
+
+        stem = spec.path.stem
+        pattern = self.config.sample_name_regex
+        if pattern is None:
+            return stem
+
+        match = re.search(pattern, stem)
+        if match is None:
+            raise ValueError(
+                f"Filename stem {stem!r} does not match sample_name_regex "
+                f"{pattern!r}"
+            )
+        if "sample" in match.groupdict():
+            sample_name = match.group("sample")
+        elif match.lastindex:
+            sample_name = match.group(1)
         else:
-            raise ValueError("The LIB_META_DATA must be a '.pkl' or '.csv' filename")
-        return df.sort_index(ascending=True, inplace=False)
+            sample_name = match.group(0)
+        if not sample_name:
+            raise ValueError(f"Empty sample name extracted from {spec.path}")
+        return sample_name
+
+    def _read_sample_peptides(self, path: Path) -> set[str]:
+        if path.suffix.lower() not in SUPPORTED_TABLE_EXTENSIONS:
+            raise ValueError(
+                f"Unsupported per-sample table format '{path.suffix}' for {path}"
+            )
+        table = _read_table(path)
+        peptide_column = self.config.sample_file_peptide_column
+        if peptide_column not in table.columns:
+            raise KeyError(
+                f"Peptide column {peptide_column!r} not found in {path}. "
+                f"Available columns: {table.columns.astype(str).tolist()}"
+            )
+
+        peptide_values = table[peptide_column]
+        if peptide_values.isna().any():
+            rows = peptide_values.index[peptide_values.isna()].tolist()[:5]
+            raise ValueError(f"Missing peptide IDs in {path} at rows {rows}")
+        peptide_ids = peptide_values.astype(str).str.strip()
+        if peptide_ids.eq("").any():
+            rows = peptide_ids.index[peptide_ids.eq("")].tolist()[:5]
+            raise ValueError(f"Empty peptide IDs in {path} at rows {rows}")
+        return set(peptide_ids)
+
+    def get_oligos_metadata_df(self) -> pd.DataFrame:
+        path = self.config.lib_metadata_input
+        if path is None:
+            raise ValueError("lib_metadata_input is required for subgroup selection")
+        if not path.is_file():
+            raise FileNotFoundError(f"Library metadata does not exist: {path}")
+
+        peptide_column = self.config.lib_col_peptide_name
+        if path.suffix.lower() in {".pkl", ".pickle"}:
+            df = pd.read_pickle(path)
+
+            if not isinstance(df, pd.DataFrame):
+                raise TypeError(
+                    "Library metadata pickle must contain a pandas DataFrame; "
+                    f"found {type(df).__name__}"
+                )
+
+            # Pickle is already loaded, so set the index explicitly if requested
+            if peptide_column is not None:
+                if peptide_column in df.columns:
+                    df = df.set_index(peptide_column)
+                elif df.index.name != peptide_column:
+                    raise ValueError(
+                        f"Peptide ID {peptide_column!r} was not found as a column "
+                        f"or index in library metadata. "
+                        f"Available columns: {df.columns.tolist()};"
+                        f"index name: {df.index.name!r}"
+                    )
+        else:
+            index_column = peptide_column if peptide_column is not None else 0
+            df = _read_table(path, index_col=index_column)
+
+        df.index = df.index.astype(str)
+        # df.index.name = peptide_col or df.index.name
+
+        if df.index.has_duplicates:
+            duplicated = df.index[df.index.duplicated()].unique().tolist()[:5]
+            raise ValueError(
+                f"Library metadata contains duplicate peptide IDs: {duplicated}"
+            )
+
+        return df
 
 
 class FeatureManager:
     def __init__(
-        self,
-        config,
-        metadata_handler,
-        oligos_handler,
-        subgroup=None,
-        group_oligos=None,
-        with_oligos=None,
-        with_additional_features=None,
-        with_run_plates=None,
-        filter_by_correlation=None,
-        filter_by_entropy=None,
-        entropy_threshold=None,
-        prevalence_threshold_max=None,
-        prevalence_threshold_min=None,
+            self,
+            config: Config,
+            metadata_handler: MetadataHandler,
+            oligos_handler: OligosHandler,
+            *,
+            subgroup: str = "all",
+            oligo_filters: Mapping[str, Any] | None = None,
+            oligo_filter_mode: str | None = None,
+            with_oligos: bool = True,
+            with_additional_features: bool = False,
+            prevalence_threshold_min: float = 0,
+            prevalence_threshold_max: float = 100,
     ):
-
         self.config = config
         self.metadata_handler = metadata_handler
         self.oligos_handler = oligos_handler
+        if not isinstance(subgroup, str):
+            raise TypeError("subgroup must be a string")
+        if subgroup != "all" and oligo_filters is not None:
+            raise ValueError(
+                "Use either subgroup or oligo_filters, not both. "
+                "subgroup is the compatibility shortcut for a True/False flag column."
+            )
+        self.subgroup = subgroup
 
-        self.le_classes = None
+        configured_oligo_filters = config.oligo_filters
+        self.oligo_filters: dict[str, Any] | None
 
-        self.fillna = (
-            self.config.fillna
-        )  # fillna if isinstance(fillna, bool) else False
+        if oligo_filters is not None:
+            self.oligo_filters = dict(oligo_filters)
 
-        self.with_oligos = with_oligos if isinstance(with_oligos, bool) else True
-        self.with_additional_features = (
-            with_additional_features
-            if isinstance(with_additional_features, bool)
-            else False
-        )
-        self.with_run_plates = (
-            with_run_plates if isinstance(with_run_plates, bool) else False
-        )
-        self.group_oligos = group_oligos if isinstance(group_oligos, bool) else False
+        elif subgroup == "all" and configured_oligo_filters is not None:
+            self.oligo_filters = dict(configured_oligo_filters)
 
-        self.filter_by_correlation = (
-            filter_by_correlation if isinstance(filter_by_correlation, bool) else False
+        else:
+            self.oligo_filters = None
+
+        self.oligo_filter_mode = oligo_filter_mode or config.oligo_filter_mode
+        if self.oligo_filter_mode not in {"all", "any"}:
+            raise ValueError("oligo_filter_mode must be either 'all' or 'any'")
+        self.with_oligos = with_oligos
+        self.with_additional_features = with_additional_features
+        self.prevalence_threshold_min = self._validate_percentage(
+            prevalence_threshold_min, "prevalence_threshold_min"
         )
-        self.filter_by_entropy = (
-            filter_by_entropy if isinstance(filter_by_entropy, bool) else False
+        self.prevalence_threshold_max = self._validate_percentage(
+            prevalence_threshold_max, "prevalence_threshold_max"
         )
-        if self.filter_by_entropy:
-            if entropy_threshold is not None and isinstance(entropy_threshold, float):
-                self.entropy_threshold = entropy_threshold
-            elif config.entropy_threshold is not None:
-                self.entropy_threshold = config.entropy_threshold
+        if self.prevalence_threshold_min > self.prevalence_threshold_max:
+            raise ValueError("Minimum prevalence cannot exceed maximum prevalence")
+        if not (with_oligos or with_additional_features):
+            raise ValueError("Select oligos, additional features, or both")
+
+    @staticmethod
+    def _validate_percentage(value: float, name: str) -> float:
+        if not isinstance(value, (int, float, np.number)) or not 0 <= value <= 100:
+            raise ValueError(f"{name} must be numeric and between 0 and 100")
+        return float(value)
+
+    @staticmethod
+    def _as_filter_values(value: Any) -> list[Any]:
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            return list(value)
+        return [value]
+
+    @staticmethod
+    def _boolean_mask(
+            series: pd.Series,
+            expected: bool,
+    ) -> pd.Series:
+        """Match common Boolean representations."""
+        boolean_mapping: dict[str, bool] = {
+            "true": True,
+            "1": True,
+            "1.0": True,
+            "yes": True,
+            "y": True,
+            "false": False,
+            "0": False,
+            "0.0": False,
+            "no": False,
+            "n": False,
+        }
+
+        normalised = series.astype("string").str.strip().str.lower()
+
+        encoded = normalised.map(boolean_mapping)
+
+        return encoded.eq(expected).fillna(False).astype(bool)
+
+    @staticmethod
+    def _boolean_filter_value(series: pd.Series, value: Any) -> bool | None:
+        """Interpret Boolean-like text only when the metadata column is Boolean-like."""
+        if isinstance(value, (bool, np.bool_)):
+            return bool(value)
+        if not isinstance(value, str):
+            return None
+
+        mapping = {
+            "true": True,
+            "1": True,
+            "1.0": True,
+            "yes": True,
+            "y": True,
+            "false": False,
+            "0": False,
+            "0.0": False,
+            "no": False,
+            "n": False,
+        }
+        expected = mapping.get(value.strip().lower())
+        if expected is None:
+            return None
+
+        observed = series.dropna().astype("string").str.strip().str.lower()
+        if observed.empty or not observed.isin(mapping).all():
+            return None
+        return expected
+
+    def _effective_oligo_filters(self) -> dict[str, Any]:
+        if self.oligo_filters is not None:
+            return self.oligo_filters
+        if self.subgroup == "all":
+            return {}
+        # Backward compatibility: subgroup="is_PNP" means is_PNP == True.
+        return {self.subgroup: True}
+
+    def _select_subgroup(self, peptides: pd.DataFrame) -> pd.DataFrame:
+        filters = self._effective_oligo_filters()
+        if not filters:
+            return peptides
+
+        library = self.oligos_handler.get_oligos_metadata_df()
+        masks: list[pd.Series] = []
+        for column, accepted in filters.items():
+            if column not in library.columns:
+                raise KeyError(f"Oligo metadata column '{column}' not found")
+            expected_boolean = self._boolean_filter_value(
+                library[column],
+                accepted,
+            )
+            if expected_boolean is not None:
+                mask = self._boolean_mask(library[column], expected_boolean)
             else:
-                self.entropy_threshold = 0.4
-        self.prevalence_threshold_min = (
-            prevalence_threshold_min
-            if isinstance(
-                prevalence_threshold_min, (int, float, np.integer, np.floating)
-            )
-            else 2.0
+                values = self._as_filter_values(accepted)
+                if not values:
+                    raise ValueError(
+                        f"Oligo filter for '{column}' has no accepted values"
+                    )
+                mask = library[column].isin(values)
+            masks.append(mask.rename(column))
+
+        mask_table = pd.concat(masks, axis=1)
+        combined = (
+            mask_table.all(axis=1)
+            if self.oligo_filter_mode == "all"
+            else mask_table.any(axis=1)
         )
-        self.prevalence_threshold_max = (
-            prevalence_threshold_max
-            if isinstance(
-                prevalence_threshold_max, (int, float, np.integer, np.floating)
-            )
-            else 98.0
-        )
-
-        self.subgroup = subgroup if isinstance(subgroup, str) else "all"
-
-    def _set_bool_attribute(self, attr_name, value):
-        if not isinstance(value, bool):
-            raise ValueError(f"{attr_name} must be a boolean.")
-        setattr(self, attr_name, value)
-
-    def set_fillna(self, fillna):
-        self._set_bool_attribute("fillna", fillna)
-
-    def set_with_oligos(self, with_oligos):
-        self._set_bool_attribute("with_oligos", with_oligos)
-
-    def set_with_additional_features(self, with_additional_features):
-        self._set_bool_attribute("with_additional_features", with_additional_features)
-
-    def set_with_run_plates(self, with_run_plates):
-        self._set_bool_attribute("with_run_plates", with_run_plates)
-
-    def set_filter_by_correlation(self, filter_by_correlation):
-        self._set_bool_attribute("filter_by_correlation", filter_by_correlation)
-
-    def set_filter_by_entropy(self, filter_by_entropy):
-        self._set_bool_attribute("filter_by_entropy", filter_by_entropy)
-
-    def set_group_oligos(self, group_oligos):
-        self._set_bool_attribute("group_oligos", group_oligos)
-
-    def set_entropy_threshold(self, entropy_threshold):
-        if isinstance(entropy_threshold, float):
-            self.entropy_threshold = entropy_threshold
-        else:
-            raise ValueError("The entropy_threshold must be a float.")
-
-    def set_prevalence_threshold_min(self, prevalence_threshold_min):
-        if (
-            isinstance(prevalence_threshold_min, (int, float, np.integer, np.floating))
-            and 0 <= prevalence_threshold_min <= 100
-        ):
-            self.prevalence_threshold_min = prevalence_threshold_min
-        else:
+        selected_ids = set(library.index[combined])
+        # Keep the original data-column order rather than the metadata-row order.
+        keep = [column for column in peptides.columns if column in selected_ids]
+        if not keep:
             raise ValueError(
-                "The prevalence threshold must be an integer or a float between 0-100."
+                f"No peptide features matched oligo_filters={filters!r} "
+                f"with mode='{self.oligo_filter_mode}'"
             )
+        return peptides.loc[:, keep]
 
-    def set_prevalence_threshold_max(self, prevalence_threshold_max):
-        if (
-            isinstance(prevalence_threshold_max, (int, float, np.integer, np.floating))
-            and 0 <= prevalence_threshold_max <= 100
-        ):
-            self.prevalence_threshold_max = prevalence_threshold_max
-        else:
-            raise ValueError(
-                "The prevalence threshold must be an integer or a float between 0-100."
-            )
+    def _filter_prevalence(self, peptides: pd.DataFrame) -> pd.DataFrame:
+        if (self.prevalence_threshold_min, self.prevalence_threshold_max) == (0, 100):
+            return peptides
+        # Assumes binary hit/exist data. For continuous input, prevalence means non-zero.
+        prevalence = (peptides.notna() & peptides.ne(0)).mean(axis=0).mul(100)
+        keep = prevalence.between(
+            self.prevalence_threshold_min,
+            self.prevalence_threshold_max,
+            inclusive="both",
+        )
+        return peptides.loc[:, keep]
 
-    def set_subgroup(self, subgroup):
-        if isinstance(subgroup, str):
-            self.subgroup = subgroup
-        else:
-            raise ValueError("subgroup must be a string.")
+    def filter_prevalence(self, features: pd.DataFrame) -> pd.DataFrame:
+        """Filter peptide columns while preserving all clinical features.
 
-    def get_attribute(self, attr_name):
-        if hasattr(self, attr_name):
-            return getattr(self, attr_name)
-        else:
-            raise AttributeError(f"Config has no attribute named '{attr_name}'")
+        This public method is useful when prevalence must be learned from a
+        training split rather than from the complete cohort. Peptides are
+        identified by ``config.peptide_prefixes``; non-peptide columns are
+        returned unchanged and in their original order.
+        """
+        if not isinstance(features, pd.DataFrame):
+            raise TypeError("features must be a pandas DataFrame")
 
-    def get_encoding(self, target_df):
-        if self.config.group_label_encoding is None:
-            le = LabelEncoder()
-            target = le.fit_transform(target_df)
-            self.le_classes = dict(zip(le.classes_, range(len(le.classes_))))
-            return pd.DataFrame({self.config.col_target: target}, index=target_df.index)
-        else:
-            return target_df.map(self.config.group_label_encoding)
-
-    def get_target_df(self):
-        target_df = self.metadata_handler.get_individuals_metadata_df()[
-            self.config.col_target
+        prefixes = tuple(self.config.peptide_prefixes)
+        peptide_columns = [
+            column for column in features.columns if str(column).startswith(prefixes)
         ]
+        if not peptide_columns:
+            return features.copy()
 
-        try:
-            # Try to convert the target column to integers
-            target_df = target_df.astype(int)
-            return target_df
-        except ValueError:
-            # If conversion fails, check for mixed values
-            if target_df.apply(lambda x: isinstance(x, int)).any():
-                raise ValueError(
-                    "The target column must contain only the group test labels to encode or must already be encoded."
-                )
-            else:
-                # If all are non-numeric, proceed to encoding
-                return self.get_encoding(target_df)
-
-    def filter_oligos_target_df(self, target_oligos_df):
-        # Initialize the filters conditionally
-
-        demog_cols = [
-            c
-            for c in target_oligos_df.columns
-            if c in self.config.extra_features_to_include
+        filtered = self._filter_prevalence(features.loc[:, peptide_columns])
+        selected_peptides = set(filtered.columns)
+        keep = [
+            column
+            for column in features.columns
+            if column not in peptide_columns or column in selected_peptides
         ]
-        peptide_cols = [
-            c
-            for c in target_oligos_df.columns
-            if c not in self.config.extra_features_to_include
-        ]
+        return features.loc[:, keep].copy()
 
-        correlation_filter = (
-            CorrelationFilter(threshold=0.9, method="phi")
-            if self.filter_by_correlation
-            else None
-        )
-        entropy_filter = (
-            EntropyFilter(threshold=self.entropy_threshold)
-            if self.filter_by_entropy
-            else None
-        )
-        prevalence_filter = PrevalenceFilter(
-            threshold_min=self.prevalence_threshold_min,
-            threshold_max=self.prevalence_threshold_max,
-        )  # Always apply prevalence filter based on given threshold
+    def get_features_target(self) -> tuple[pd.DataFrame, pd.Series]:
+        metadata = self.metadata_handler.get_individuals_metadata_df()
+        common_samples = metadata.index
+        parts: list[pd.DataFrame] = []
 
-        # Initialize the pipeline steps based on active filters
-        pipeline_steps = []
-
-        if correlation_filter is not None:
-            pipeline_steps.append(("correlation_filter", correlation_filter))
-        if entropy_filter is not None:
-            pipeline_steps.append(("entropy_filter", entropy_filter))
-
-        # Prevalence filter is always added
-        pipeline_steps.append(("prevalence_filter", prevalence_filter))
-
-        # Create a feature selection pipeline with active steps
-        pipeline = Pipeline(pipeline_steps)
-
-        # 3) wrap that in a ColumnTransformer
-        ct = ColumnTransformer(
-            [
-                ("peptides", pipeline, peptide_cols),
-                ("demog", "passthrough", demog_cols),
-            ],
-            remainder="drop",
-            verbose_feature_names_out=False,
-        )
-
-        # if you want back a pandas DataFrame with nice columns
-        # ct.set_output(transform="pandas")
-        # Fit the pipeline and transform the DataFrame
-        return ct.fit_transform(target_oligos_df)
-
-    def get_oligos_with_target(self):
-        target_df = self.get_target_df()  # Get target data
-        oligos_df = self.oligos_handler.get_oligos_df()  # Get peptide data
-
-        # Merge target and oligos dataframes
-        target_oligos_df = (
-            pd.merge(
-                target_df, oligos_df, left_index=True, right_index=True, how="inner"
-            )
-            .set_index(self.config.col_target, append=True)
-            .reorder_levels([1, 0])
-        )
-        target_oligos_df.index.rename(
-            [self.config.col_target, self.config.col_sample_name], inplace=True
-        )
-
-        # Apply filters if provided
-        return self.filter_oligos_target_df(target_oligos_df)
-
-    def get_oligos_metadata_subgroup_with_target(self):
-        target_oligos_df = self.get_oligos_with_target()
-
-        if self.subgroup != "all":
-            oligos_meta_df = self.oligos_handler.get_oligos_metadata_df()
-            to_keep = oligos_meta_df[
-                oligos_meta_df[self.subgroup].notna()
-                & oligos_meta_df[self.subgroup].astype(bool)
-            ].index
-            to_keep = to_keep[to_keep.isin(target_oligos_df.columns)]
-            target_oligos_df = target_oligos_df[
-                to_keep
-            ]  # all rows and only columns with true value
-
-        return target_oligos_df
-
-    def get_oligos_additional_features_run_plates_with_target(
-        self, target_with_without_oligos_df, **impute_kwargs
-    ):
-        if self.with_additional_features and self.with_run_plates:
-            ind_meta_df = self.metadata_handler.get_additional_features_run_plates_df(
-                **impute_kwargs
-            )
-        elif self.with_additional_features:
-            ind_meta_df = self.metadata_handler.get_additional_features_df(
-                **impute_kwargs
-            )
-        elif self.with_run_plates:
-            ind_meta_df = self.metadata_handler.get_run_plates_df()
-        else:
-            raise ValueError(
-                "At least one of 'with_oligos', 'with_additional_features', or 'with_run_plates' must be True."
-            )
-            # return target_with_without_oligos_df
-
-        if isinstance(target_with_without_oligos_df, pd.DataFrame):
-            return pd.merge(
-                target_with_without_oligos_df,
-                ind_meta_df,
-                left_index=True,
-                right_index=True,
-                how="inner",
-            )
-        else:  # without oligos
-            return (
-                pd.merge(
-                    target_with_without_oligos_df,
-                    ind_meta_df,
-                    left_on=self.config.col_sample_name,
-                    right_on=self.config.col_sample_name,
-                )
-                .set_index(self.config.col_target, append=True)
-                .reorder_levels([1, 0])
-            )
-
-    def get_data_with_target(self, **impute_kwargs):
         if self.with_oligos:
-            target_oligos_df = self.get_oligos_metadata_subgroup_with_target()
-            if self.with_additional_features or self.with_run_plates:
-                return self.get_oligos_additional_features_run_plates_with_target(
-                    target_oligos_df, **impute_kwargs
-                )
-            else:
-                return target_oligos_df
+            peptides = self.oligos_handler.get_oligos_df()
+            common_samples = common_samples.intersection(peptides.index, sort=False)
+            peptides = peptides.loc[common_samples]
+            peptides = self._filter_prevalence(self._select_subgroup(peptides))
+            parts.append(peptides)
 
-        elif self.with_additional_features or self.with_run_plates:
-            target_df = self.get_target_df()
-            return self.get_oligos_additional_features_run_plates_with_target(
-                target_df, **impute_kwargs
-            )
-        else:
+        if self.with_additional_features:
+            additional = self.metadata_handler.get_additional_features_df()
+            common_samples = common_samples.intersection(additional.index, sort=False)
+            parts.append(additional.loc[common_samples])
+
+        if len(common_samples) == 0:
+            raise ValueError("Data and metadata have no sample IDs in common")
+        X = pd.concat([part.loc[common_samples] for part in parts], axis=1)
+
+        if X.shape[1] == 0:
+            raise ValueError("No features remain")
+
+        if X.columns.duplicated().any():
+            duplicates = X.columns[X.columns.duplicated()].unique().tolist()[:5]
             raise ValueError(
-                "At least one of 'with_oligos', 'with_additional_features', or 'with_run_plates' must be True."
+                f"Duplicate feature names after combining data: {duplicates}"
             )
-            # return pd.DataFrame()
+        if self.config.fillna_value is not None:
+            X = X.fillna(self.config.fillna_value)
 
-    def get_category_oligos_with_target(self, target_oligos_df):
-        oligos_meta_df = self.oligos_handler.get_oligos_metadata_df()
+        labels = metadata.loc[common_samples, self.config.col_target]
+        y = self._encode_target(labels)
+        return X, y
 
-        # Filter the metadata DataFrame to include only the desired subgroups
-        valid_subgroups = [
-            subgroup
-            for subgroup in self.config.subgroups_to_include
-            if subgroup in oligos_meta_df.columns
-        ]
-        metadata_filtered = oligos_meta_df.loc[
-            oligos_meta_df.index.intersection(target_oligos_df.columns), valid_subgroups
-        ]
+    def _encode_target(self, labels: pd.Series) -> pd.Series:
+        """Return integer class codes from labels and/or positional codes."""
+        mapped = labels.map(self.config.group_label_encoding)
+        numeric = pd.to_numeric(labels, errors="coerce")
+        integer_like = numeric.notna() & np.isclose(numeric, numeric.round())
+        valid_codes = set(range(len(self.config.group_tests)))
+        valid = integer_like & numeric.isin(valid_codes)
 
-        # Here we create a dictionary where each peptide maps to a list of subgroups it belongs to
-        peptide_to_subgroups = metadata_filtered.apply(
-            lambda row: [subgroup for subgroup in valid_subgroups if row[subgroup]],
-            axis=1,
+        encoded = mapped.astype("Float64")
+        use_numeric = encoded.isna() & valid
+        encoded.loc[use_numeric] = numeric.loc[use_numeric]
+        if encoded.notna().all():
+            return encoded.astype(int).rename(self.config.col_target)
+
+        invalid = labels.loc[~valid & mapped.isna()].drop_duplicates().tolist()
+        raise ValueError(
+            f"Target values {invalid!r} are neither configured labels "
+            f"{self.config.group_tests!r} nor valid positional codes "
+            f"{list(range(len(self.config.group_tests)))!r}."
         )
-
-        # Initialize an empty DataFrame to store subgroup counts for each sample
-        target_category_oligos_df = pd.DataFrame(
-            index=target_oligos_df.index, columns=valid_subgroups, data=0
-        )
-
-        # Iterate over each sample in the multi-index DataFrame and calculate counts
-        for (group_test, sample_id), sample_data in target_oligos_df.groupby(
-            level=[0, 1]
-        ):
-            # Get the list of peptides that are present in the sample
-            present_peptides = sample_data.columns[sample_data.iloc[0] > 0]
-
-            # Count presence in each subgroup for the sample
-            for peptide in present_peptides:
-                # Check which subgroups this peptide belongs to
-                subgroups = peptide_to_subgroups.get(peptide, [])
-                for subgroup in subgroups:
-                    # Increment the count for the subgroup for this specific sample
-                    target_category_oligos_df.at[(group_test, sample_id), subgroup] += 1
-
-        entropy_filter = EntropyFilter(threshold=self.entropy_threshold)
-        return entropy_filter.fit_transform(target_category_oligos_df)
-
-    def get_aggregated_data_with_target(self, **impute_kwargs):
-        target_oligos_df = self.get_oligos_with_target()
-        target_category_oligos_df = self.get_category_oligos_with_target(
-            target_oligos_df
-        )
-
-        if self.with_additional_features or self.with_run_plates:
-            return self.get_oligos_additional_features_run_plates_with_target(
-                target_category_oligos_df, **impute_kwargs
-            )
-        else:
-            return target_category_oligos_df
-
-    def split_features_target_df(self, target_features_df):
-        target = target_features_df.reset_index(level=0)[self.config.col_target]
-        features = target_features_df.reset_index(level=0, drop=True)
-
-        if self.fillna:
-            features = features.fillna(0).infer_objects(copy=False)
-        if features.shape[1] == 0:
-            return pd.DataFrame(), pd.Series()
-
-        return features, target
-
-    def get_features_target(self, **impute_kwargs):
-        if self.group_oligos:
-            target_features_df = self.get_aggregated_data_with_target(
-                **impute_kwargs
-            ).sort_index(level=self.config.col_target)
-        else:
-            target_features_df = self.get_data_with_target(**impute_kwargs).sort_index(
-                level=self.config.col_target
-            )
-
-        features, target = self.split_features_target_df(target_features_df)
-        # features = VarianceThreshold(threshold=0.0).fit_transform(features)
-
-        return features, target

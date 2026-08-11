@@ -1,8 +1,7 @@
 # Input tables. Relative paths are resolved from this YAML file.
 # Supported data/metadata formats: CSV, TSV/TXT, XLSX, and XLS.
-metadata_input: ../data/metadata.xlsx
-data_input: ../data/exist.csv
-
+metadata_input: /home/creyna/Vogl-lab_Projects_git/HCC/Metadata/Classification/HCC-MUW_metadata.xlsx
+data_input:  /home/creyna/Vogl-lab_Projects_git/HCC/Data/Classification/Diagnostics/Controls_HCC/Data/exist.csv
 # Input interpretation:
 #   auto         -> existing directory means per-sample files; file means matrix
 #   matrix       -> one existing sample/peptide matrix
@@ -11,6 +10,7 @@ data_input_mode: auto
 
 # Used only in sample-files mode. Glob patterns support filename prefixes,
 # suffixes, multiple patterns, and recursive discovery (for example **/*.csv).
+
 sample_file_patterns:
   - "*.csv"
 sample_file_peptide_column: ID
@@ -21,9 +21,10 @@ sample_name_regex: null
 
 # Required only when subgroup or oligo_filters is used.
 # Supported formats also include pickle for library metadata.
-lib_metadata_input: ../data/library_metadata.pkl
+lib_metadata_input: /home/creyna/Vogl-lab_Projects_git/HCC/Metadata/combined_libraries_with_lineages_important_info_nonAAseq.pkl
+#Classification/aligent_twist_with_important_info_excludeSARS.pkl
 
-project: Controls_vs_HCC
+project: HCC_MUW
 group_tests:
   - Controls
   - HCC
@@ -62,6 +63,85 @@ oligo_filters: null
 oligo_filter_mode: all
 
 classification:
+
+  # -------------------------------------------------------------------
+  # Cohort selection
+  # -------------------------------------------------------------------
+  # Cohort filters use exact matches against columns in the metadata.
+  #
+  # Multiple columns are combined with AND:
+  #   treatment: ICI
+  #   center: MUW
+  #
+  # A list means OR within that column:
+  #   center: [MUW, UKE]
+  #
+  # train_filters, split_filters, and validation_sets select independent
+  # cohorts from the metadata. They are not applied sequentially.
+  # Therefore, include every required condition in each filter.
+
+  # Main training cohort
+  # --------------------
+  # Selects the samples used as the main training dataset.
+  #
+  # If omitted, the top-level filters_metadata setting is inherited.
+  # If neither is configured, all eligible metadata samples are used.
+  #
+  # Example:
+  # train_filters:
+  #   cohort: training
+  #   center: MUW
+  train_filters: null
+
+  # Optional cohort to divide into training and hold-out samples
+  # ------------------------------------------------------------
+  # Selects an additional cohort that will be randomly divided according
+  # to train_size. The split is stratified by the classification target
+  # whenever the selected cohort contains both target classes.
+  #
+  # When split_only is false:
+  #   - the training portion is appended to train_filters;
+  #   - the hold-out portion is appended to each validation dataset;
+  #   - train_filters must also be configured.
+  #
+  # When split_only is true:
+  #   - only the cohort selected by split_filters is used;
+  #   - the training portion becomes the complete training dataset;
+  #   - the hold-out portion becomes the validation dataset;
+  #   - train_filters and validation_sets are ignored.
+  #
+  # Keep split_filters disjoint from train_filters and validation_sets
+  # to prevent duplicated samples and data leakage.
+  #
+  # Example:
+  # split_filters:
+  #   cohort: cohort_to_split
+  #   treatment: ICI
+  split_filters: null
+
+  # Fraction of the split_filters cohort assigned to training.
+  # The remaining fraction is used as hold-out data.
+  # This setting is ignored when split_filters is null.
+  train_size: 0.7
+
+  # false: combine the split cohort with the main training/validation cohorts.
+  # true:  train and validate using only the split_filters cohort.
+  split_only: false
+
+  # Independent validation cohorts
+  # ------------------------------
+  # Each entry defines a metadata filter and the name used for output files.
+  # These datasets are aligned to the features expected by the fitted model.
+  #
+  # Example:
+  # validation_sets:
+  #   - name: external_HCC
+  #     filters:
+  #       cohort: external
+  #       center: Graz
+  validation_sets: []
+
+  # -------------------------------
   model_type: xgboost
   param_grid_name: xgboost
   seed: 420
@@ -78,8 +158,8 @@ classification:
 
   with_oligos: true
   with_additional_features: true
-  prevalence_threshold_min: 5
-  prevalence_threshold_max: 95
+  prevalence_threshold_min: 1
+  prevalence_threshold_max: 99
 
   outer_cv_splits: 5
   inner_cv_splits: 3
@@ -91,31 +171,16 @@ classification:
   # values and you intentionally do not want imputation.
   impute_extra_numeric: false
   extra_numeric_impute_strategy: median
+
+  # When aligning to an external set, fill missing peptides with zero.
   fill_missing_peptides_with_zero: true
-
-  # If omitted/null, top-level filters_metadata defines the training cohort.
-  # train_filters:
-  #   cohort: training
-  train_filters: null
-
-  # Optional special cohort to stratify into train/hold-out portions. Its
-  # training part is appended to train_filters; its test part is appended to
-  # each validation set. Set split_only=true to use only this split.
-  split_filters: null
-  train_size: 0.7
-  split_only: false
-
-  validation_sets: []
-  # validation_sets:
-  #   - name: external_cohort
-  #     filters:
-  #       cohort: external
 
   output_dir: ../results
   output_name: Controls_vs_HCC
   input_dir: ../results
   input_name: Controls_vs_HCC
 
+# -------------------------------------
 # Bayesian search spaces are separated by model, so one Config object can
 # provide either grid without mutating the YAML representation.
 param_grid:

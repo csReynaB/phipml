@@ -1,0 +1,411 @@
+# =============================================================================
+# phipml complete configuration template
+# =============================================================================
+#
+# Precedence for classification execution settings:
+#   internal default < this YAML classification section < explicit CLI option
+#
+# Relative paths are resolved from the directory containing this YAML file,
+# not from the shell's current working directory.
+
+
+# =============================================================================
+# 1. Required sample metadata and peptide data
+# =============================================================================
+
+# Sample metadata table.
+# Supported: .csv, .tsv, .txt, .xlsx, .xls
+metadata_input: ../data/metadata.xlsx
+
+# Peptide data. This can be:
+#   1. one combined sample/peptide matrix;
+#   2. a directory containing one enrichment table per sample; or
+#   3. a tab-delimited manifest listing individual sample tables.
+data_input: ../data/exist.csv
+
+# How data_input should be interpreted:
+#   auto         existing directory -> sample-files; file -> matrixa
+#   matrix       one combined matrix
+#   sample-files directory or manifest containing individual sample tables
+#
+# Explicit matrix/sample-files is clearer for production configurations.
+data_input_mode: matrix
+
+
+# =============================================================================
+# 2. Individual sample-file options
+# =============================================================================
+# These settings are ignored when data_input_mode is matrix.
+
+# Glob patterns are used only when data_input points to a directory.
+# Multiple and recursive patterns are supported, for example:
+#   - "R52P01_*_A_T_C2.csv"
+#   - "batch_*/**/*_significant.tsv"
+sample_file_patterns:
+  - "*.csv"
+
+# Column containing enriched peptide IDs in every individual sample table.
+sample_file_peptide_column: ID
+
+# By default, the filename stem becomes SampleName:
+#   Sample_01.csv -> Sample_01
+#
+# Optionally extract a different name using a regular expression. Prefer a
+# named group called "sample", for example:
+#   sample_name_regex: 'prefix_(?P<sample>.+)_enriched'
+#
+# A sample name explicitly supplied in a manifest takes precedence.
+sample_name_regex: null
+
+# Manifest examples (data_input_mode must be sample-files):
+#
+# One path per line:
+#   ABS/Sample_01.csv
+#   ABS/Sample_02.csv
+#
+# Or explicit sample name + TAB + path:
+#   sample_name    path
+#   Sample-01      ABS/raw_01.csv
+#   Sample-02      ABS/raw_02.csv
+
+
+# =============================================================================
+# 3. Peptide-library metadata
+# =============================================================================
+
+# Required only when subgroup or oligo_filters is used.
+# Supported: .csv, .tsv, .txt, .xlsx, .xls, .pkl, .pickle
+lib_metadata_input: ../data/library_metadata.pkl
+
+# Peptide-ID column in library metadata.
+#
+# Leave null when peptide IDs are already stored in the first column (table
+# formats) or as the DataFrame index (pickle). Set a name such as peptide_id
+# when that named column should become the index. For a pickle whose peptide
+# IDs are already the index, this may also be its matching index name.
+lib_col_peptide_name: null
+
+
+# =============================================================================
+# 4. Project, samples, and target
+# =============================================================================
+
+# Optional descriptive project identifier.
+project: Controls_vs_Cases
+
+# Target classes in encoding order:
+#   group_tests[0] -> 0
+#   group_tests[1] -> 1
+# Additional groups are supported by DataHandler, although the current phipml
+# classification CLI requires exactly two final training classes.
+group_tests:
+  - Controls
+  - Cases
+
+# Metadata column names.
+col_sample_name: SampleName
+col_target: group_test
+
+# Compatibility/output column used by some plotting or prediction workflows.
+col_predict: class1_proba
+
+# General reproducibility seed. classification.seed overrides it for model runs.
+random_state: 420
+
+
+# =============================================================================
+# 5. Clinical/additional features
+# =============================================================================
+
+# Metadata columns to append to peptide features.
+#
+# Common Sex/Gender values (F/Female/M/Male/0/1) are converted to 0/1.
+# Other variables are returned unchanged by DataHandler. The classification
+# pipeline accepts numeric binary and continuous extras. Non-numeric categorical
+# variables must be one-hot encoded before model fitting.
+extra_features_to_include:
+  - Sex
+  - Age
+
+# Fill missing values in the complete feature matrix immediately after loading.
+# null preserves missingness for pipeline-level handling and is recommended.
+# A numeric value such as 0 fills both peptide and additional-feature missingness.
+fillna_value: null
+
+
+# =============================================================================
+# 6. Peptide identification and combined-matrix orientation
+# =============================================================================
+
+# Prefixes used by the modelling pipeline to distinguish peptide columns from
+# clinical/additional columns. A trailing underscore is added automatically.
+peptide_prefixes:
+  - agilent
+  - corona2
+  - twist
+
+# Used only for a combined matrix:
+#   true  input is peptide x sample and will be transposed
+#   false input is already sample x peptide
+# Individual sample files always produce sample x peptide data.
+transposed: true
+
+
+# =============================================================================
+# 7. Base sample-metadata filters
+# =============================================================================
+
+# filters_metadata uses AND between all keys. Each value may be a scalar or list.
+# This is also the default training filter when classification.train_filters is
+# null. Leave null to retain every metadata row before target selection.
+filters_metadata: null
+# filters_metadata:
+#   cohort: training
+#   treatment:
+#     - ICI
+#     - TKI
+
+# combined_filters_metadata uses OR between condition mappings. Keys inside one
+# condition use AND. It is applied after filters_metadata, so both stages must
+# pass overall.
+combined_filters_metadata: null
+# combined_filters_metadata:
+#   - site: Vienna
+#     timepoint: baseline
+#   - site: Hamburg
+#     timepoint: followup
+
+
+# =============================================================================
+# 8. Default peptide-library filters
+# =============================================================================
+
+# Select peptide columns using lib_metadata_input. Values can be Boolean,
+# numeric, strings, or lists. These top-level values are inherited by a
+# classification run when classification.subgroup is all and the classification
+# section does not define its own oligo_filters.
+oligo_filters: null
+# oligo_filters:
+#   Species: Homo sapiens
+#   is_PNP: true
+
+# Multiple filters:
+#   all -> AND; every condition must match
+#   any -> OR; at least one condition must match
+oligo_filter_mode: all
+
+
+# =============================================================================
+# 9. Classification execution settings
+# =============================================================================
+
+classification:
+  # Supported binary classifiers: xgboost, random-forest
+  model_type: xgboost
+
+  # Name of the top-level param_grid subsection to use. Usually model_type.
+  param_grid_name: xgboost
+
+  # Model/CV seed. If omitted, top-level random_state is used.
+  seed: 420
+
+  # Run repeated outer evaluation with inner tuning.
+  run_nested_cv: true
+
+  # Load an existing fitted Pipeline instead of fitting the full-cohort model.
+  # Nested CV still creates/fits its own fold models when run_nested_cv is true.
+  use_pretrained: false
+
+  # Fit/save the full training-cohort model and stop before validation.
+  only_train_model: false
+
+  # Backward-compatible shortcut: subgroup: is_PNP means is_PNP == true.
+  # Use either a subgroup other than all OR oligo_filters, never both.
+  subgroup: all
+
+  # Optional run-specific library filters. These override inherited top-level
+  # oligo_filters. Keep null when subgroup is not all.
+  oligo_filters: null
+  # oligo_filters:
+  #   Species:
+  #     - Homo sapiens
+  #     - Escherichia coli
+  #   is_PNP: true
+
+  oligo_filter_mode: all
+
+  # Feature sources. At least one must be true.
+  with_oligos: true
+  with_additional_features: true
+
+  # Peptide presence prevalence percentages. In CLI runs, prevalence is learned
+  # from the final training matrix, avoiding leakage from validation cohorts.
+  prevalence_threshold_min: 1
+  prevalence_threshold_max: 99
+
+  # Nested CV and Bayesian optimization.
+  outer_cv_splits: 5
+  inner_cv_splits: 3
+  n_iter: 30
+
+  # Avoid enabling parallelism at both levels unless resources are controlled;
+  # doing so can oversubscribe CPUs and memory.
+  n_jobs_outer: 1
+  n_jobs_inner: -1
+
+  # Continuous numeric clinical variables may be imputed inside the pipeline,
+  # which keeps fitting fold-specific and prevents leakage. Numeric binary
+  # variables pass through unchanged.
+  impute_extra_numeric: false
+  extra_numeric_impute_strategy: median
+  # Supported: mean, median, most_frequent, constant
+
+  # External validation alignment:
+  # true  -> add peptides missing from validation data and fill them with zero
+  # false -> missing expected peptide features raise an error
+  # Missing non-peptide clinical variables always raise an error.
+  fill_missing_peptides_with_zero: true
+
+  # Training metadata filter. null inherits top-level filters_metadata.
+  train_filters: null
+  # train_filters:
+  #   cohort: training
+  #   treatment: ICI
+
+  # Optional cohort to split stratifiably into train and hold-out portions.
+  # When split_only is false, its training part is appended to train_filters and
+  # its held-out part is appended to every validation set.
+  split_filters: null
+  # split_filters:
+  #   cohort: controls
+
+  # Fraction of split_filters samples assigned to its training portion.
+  train_size: 0.7
+
+  # true uses only split_filters for train/hold-out evaluation and requires
+  # split_filters. false enables the optional append behavior described above.
+  split_only: false
+
+  # Zero or more external validation cohorts. Every filter mapping selects rows
+  # from the same metadata/data inputs; name controls the output filename.
+  validation_sets: []
+  # validation_sets:
+  #   - name: external_site
+  #     filters:
+  #       cohort: external
+  #       site: Graz
+  #   - name: second_validation
+  #     filters:
+  #       cohort: external_2
+
+  # Output directory is created automatically.
+  output_dir: ../results
+  output_name: Controls_vs_Cases
+
+  # Used only with use_pretrained: true. input_name may be a direct .joblib
+  # filename or a name used to search the standard training_/validation_ names.
+  input_dir: ../results
+  input_name: Controls_vs_Cases
+
+
+# =============================================================================
+# 10. Bayesian search spaces
+# =============================================================================
+#
+# Supported specification types:
+#   integer:     low, high
+#   real:        low, high, optional prior (uniform or log-uniform)
+#   categorical: categories
+#
+# If param_grid is empty ({}), the pipeline is fitted without hyperparameter
+# search. Peptide feature-selection parameters are inactive when no peptide
+# features are included.
+
+param_grid:
+  xgboost:
+    preprocessor__peptides__feature_selection__estimator__l1_ratio:
+      type: real
+      low: 0.2
+      high: 0.8
+      prior: uniform
+
+    preprocessor__peptides__feature_selection__estimator__C:
+      type: real
+      low: 0.01
+      high: 100.0
+      prior: log-uniform
+
+    estimator__learning_rate:
+      type: real
+      low: 0.01
+      high: 0.3
+      prior: log-uniform
+
+    estimator__max_depth:
+      type: integer
+      low: 3
+      high: 10
+
+    estimator__subsample:
+      type: real
+      low: 0.6
+      high: 1.0
+      prior: uniform
+
+    estimator__colsample_bytree:
+      type: real
+      low: 0.6
+      high: 1.0
+      prior: uniform
+
+    estimator__reg_lambda:
+      type: real
+      low: 0.01
+      high: 10.0
+      prior: log-uniform
+
+    estimator__n_estimators:
+      type: integer
+      low: 50
+      high: 500
+
+  random-forest:
+    preprocessor__peptides__feature_selection__estimator__l1_ratio:
+      type: real
+      low: 0.2
+      high: 0.8
+      prior: uniform
+
+    preprocessor__peptides__feature_selection__estimator__C:
+      type: real
+      low: 0.01
+      high: 100.0
+      prior: log-uniform
+
+    estimator__n_estimators:
+      type: integer
+      low: 50
+      high: 500
+
+    estimator__max_depth:
+      type: integer
+      low: 3
+      high: 30
+
+    estimator__min_samples_split:
+      type: integer
+      low: 2
+      high: 15
+
+    estimator__min_samples_leaf:
+      type: integer
+      low: 1
+      high: 15
+
+    estimator__max_features:
+      type: categorical
+      categories: [sqrt, log2, 0.3, 0.5, 0.7]
+
+    estimator__class_weight:
+      type: categorical
+      categories: [balanced, balanced_subsample]

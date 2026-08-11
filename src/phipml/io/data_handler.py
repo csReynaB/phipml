@@ -1046,6 +1046,9 @@ class FeatureManager:
             self.prevalence_threshold_max,
             inclusive="both",
         )
+        #keep = (prevalence.gt(self.prevalence_threshold_min) &
+        #        prevalence.lt(self.prevalence_threshold_max)
+        #)
         return peptides.loc[:, keep]
 
     def filter_prevalence(self, features: pd.DataFrame) -> pd.DataFrame:

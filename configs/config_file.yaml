@@ -168,7 +168,7 @@ classification:
   n_jobs_inner: -1
 
   # Leave false when the selected estimator can handle the observed missing
-  # values and you intentionally do not want imputation.
+  # values, and you intentionally do not want imputation.
   impute_extra_numeric: false
   extra_numeric_impute_strategy: median
 

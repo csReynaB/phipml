@@ -11,10 +11,11 @@ where = ["src"]
 # ---------------------------------------------------------------------
 [project]
 name = "phipml"
-version = "1.0"
+version = "4.2.0"
 description = "Classification analysis and ML pipelines using XGBoost/random forest, SHAP, and sklearn"
 readme = "README.md"
 requires-python = ">=3.10"
+license-files = ["LICENSE"]
 
 authors = [
   { name = "Carlos S. Reyna-Blanco" }
@@ -52,7 +53,7 @@ dependencies = [
 # Or install via conda-forge separately
 # ---------------------------------------------------------------------
 [project.scripts]
-trainTest = "phipml.cli.train_test:main"
+phipml = "phipml.cli.train_test:main"
 
 [project.optional-dependencies]
 dev = [

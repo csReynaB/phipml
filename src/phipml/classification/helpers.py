@@ -813,7 +813,7 @@ def _positive_class_shap_values(
     n_samples: int,
     n_features: int,
 ) -> np.ndarray:
-    """Normalise SHAP output from XGBoost and RandomForest to a 2D class-1 array."""
+    """Normalize SHAP output from XGBoost and RandomForest to a 2D class-1 array."""
     if isinstance(shap_result, list):
         if len(shap_result) < 2:
             values = np.asarray(shap_result[0])

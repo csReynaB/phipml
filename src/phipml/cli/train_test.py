@@ -14,6 +14,7 @@ import joblib
 import pandas as pd
 from sklearn.pipeline import Pipeline
 
+from phipml import __version__
 from phipml.classification.helpers import (
     ValidationResultWithReport,
     build_pipeline,
@@ -57,9 +58,20 @@ def parse_args_classification(
 ) -> argparse.Namespace:
     """Parse CLI overrides; unspecified settings are read from YAML."""
     parser = _ArgParser(
-        description="Train and validate PhIP-seq classification models.",
+        prog="phipml",
+        description=(
+            f"phipml {__version__} - "
+            "train and validate PhIP-seq classification models."
+        ),
         fromfile_prefix_chars="@",
     )
+    parser.add_argument(
+        "--version",
+        "-V",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+
     parser.add_argument(
         "--config",
         "-c",

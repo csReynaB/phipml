@@ -474,6 +474,11 @@ def compute_interp_pr_ap(y_true, y_pred_proba, mean_recall):
     # Compute precision–recall curve
     precision, recall, _ = precision_recall_curve(y_true, y_pred_proba)
 
+    # sklearn returns recall from 1 -> 0.
+    # Reverse it so recall increases from 0 -> 1 for np.interp.
+    recall = recall[::-1]
+    precision = precision[::-1]
+
     # Ensure recall is strictly increasing for interpolation
     recall_unique, idx = np.unique(recall, return_index=True)
     precision_unique = precision[idx]
@@ -486,7 +491,7 @@ def compute_interp_pr_ap(y_true, y_pred_proba, mean_recall):
         interp_precision[0] = 1.0
 
     # pr_auc = auc(recall, precision) this uses trapezoid
-    # Compute PR-AUC using Average Precision (ML standard)
+    # Compute Average Precision (AP)
     ap_value = average_precision_score(y_true, y_pred_proba)
 
     return interp_precision, ap_value
@@ -1049,7 +1054,7 @@ def nested_cv(
         ),
     }
     logger.info("Mean ROC-AUC across folds: %.3f", metrics["roc"]["auc"])
-    logger.info("Mean PR-AUC across folds: %.3f", metrics["pr"]["ap"])
+    logger.info("Mean Average Precision (AP) across folds: %.3f", metrics["pr"]["ap"])
 
     return (
         models,
@@ -1277,7 +1282,7 @@ def train_and_validate_model(
     ] = selected_shap
 
     logger.info("ROC-AUC in validation set: %.3f", metrics["roc"]["auc"])
-    logger.info("PR-AUC in validation set: %.3f", metrics["pr"]["ap"])
+    logger.info("Average Precision (AP) in validation set: %.3f", metrics["pr"]["ap"])
 
     result: ValidationResult = (
         best_estimator,

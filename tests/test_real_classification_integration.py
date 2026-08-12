@@ -8,6 +8,7 @@ small and synthetic so the tests remain suitable for local development.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import joblib
 import numpy as np
@@ -15,7 +16,7 @@ import pandas as pd
 import pytest
 import yaml
 from sklearn.pipeline import Pipeline
-from skopt.space import Integer
+from skopt.space import Integer, Real
 
 from phipml.classification.helpers import (
     _build_and_fit_pipeline,
@@ -101,6 +102,25 @@ def _small_random_forest_pipeline(X: pd.DataFrame) -> Pipeline:
         estimator__n_jobs=1,
     )
     return pipeline
+
+
+def _small_joint_search_space() -> dict[str, Any]:
+    """Return a fast, stable selector/forest space for integration tests."""
+    return {
+        "preprocessor__peptides__feature_selection__estimator__l1_ratio": Real(
+            0.35,
+            0.65,
+            prior="uniform",
+        ),
+        "preprocessor__peptides__feature_selection__estimator__C": Real(
+            0.5,
+            2.0,
+            prior="log-uniform",
+        ),
+        "estimator__n_estimators": Integer(20, 50),
+        "estimator__max_depth": Integer(2, 5),
+        "estimator__min_samples_leaf": Integer(1, 3),
+    }
 
 
 def _noisy_synthetic_classification_data(
@@ -306,6 +326,54 @@ def test_real_bayesian_tuning_returns_fitted_best_pipeline() -> None:
     assert np.all((probabilities >= 0.0) & (probabilities <= 1.0))
 
 
+def test_real_nested_cv_jointly_tunes_selector_and_random_forest() -> None:
+    """Tune peptide selection and the classifier inside each outer fold."""
+    X, y = _noisy_synthetic_classification_data(
+        60,
+        seed=11,
+        sample_prefix="TUNED",
+        flip_fraction=0.20,
+    )
+    search_space = _small_joint_search_space()
+
+    models, shap_values, scores, folds, metrics, selected_features = nested_cv(
+        X,
+        y,
+        pipeline=_small_random_forest_pipeline(X),
+        param_grid=search_space,
+        n_splits=3,
+        n_splits_inner=2,
+        n_iter=4,
+        model_type="random-forest",
+        random_state=17,
+        n_jobs=1,
+        n_jobs_inner=1,
+        peptide_prefixes=PEPTIDE_PREFIXES,
+    )
+
+    assert len(models) == len(folds) == len(selected_features) == 3
+    assert scores.notna().all()
+    assert shap_values.notna().all().all()
+    assert all(selected_features)
+
+    for model in models:
+        parameters = model.get_params()
+        assert 0.35 <= parameters[
+            "preprocessor__peptides__feature_selection__estimator__l1_ratio"
+        ] <= 0.65
+        assert 0.5 <= parameters[
+            "preprocessor__peptides__feature_selection__estimator__C"
+        ] <= 2.0
+        assert 20 <= parameters["estimator__n_estimators"] <= 50
+        assert 2 <= parameters["estimator__max_depth"] <= 5
+        assert 1 <= parameters["estimator__min_samples_leaf"] <= 3
+
+    roc_auc = float(metrics["roc"]["auc"])
+    pr_auc = float(metrics["pr"]["ap"])
+    assert 0.55 <= roc_auc <= 1.0
+    assert 0.55 <= pr_auc <= 1.0
+
+
 def test_real_xgboost_pipeline_fits_predicts_and_calculates_shap() -> None:
     """Exercise the second supported classifier and its TreeSHAP output."""
     X, y = _synthetic_classification_data(
@@ -342,8 +410,8 @@ def test_real_xgboost_pipeline_fits_predicts_and_calculates_shap() -> None:
     assert selected_features == shap_frame.columns.tolist()
 
 
-def test_real_full_model_external_validation_alignment_metrics_and_shap() -> None:
-    """Fit once, align an external cohort, and calculate real metrics/SHAP."""
+def test_real_perfect_external_validation_without_tuning() -> None:
+    """Validate perfect signal and external alignment without hyperparameter search."""
     X_train, y_train = _synthetic_classification_data(
         30,
         seed=3,
@@ -405,8 +473,128 @@ def test_real_full_model_external_validation_alignment_metrics_and_shap() -> Non
 
     _assert_probability_metric(metrics["roc"]["auc"], "external ROC-AUC")
     _assert_probability_metric(metrics["pr"]["ap"], "external PR-AUC")
-    assert float(metrics["roc"]["auc"]) >= 0.80
-    assert float(metrics["pr"]["ap"]) >= 0.80
+    assert float(metrics["roc"]["auc"]) == pytest.approx(1.0)
+    assert float(metrics["pr"]["ap"]) == pytest.approx(1.0)
+
+
+def test_real_noisy_external_validation_without_tuning() -> None:
+    """Validate noisy signal with fitted selection but no hyperparameter search."""
+    X_train, y_train = _noisy_synthetic_classification_data(
+        60,
+        seed=11,
+        sample_prefix="NOISY_TRAIN",
+        flip_fraction=0.20,
+    )
+    X_external, y_external = _noisy_synthetic_classification_data(
+        40,
+        seed=21,
+        sample_prefix="NOISY_EXTERNAL",
+        flip_fraction=0.20,
+    )
+
+    fitted = train_and_validate_model(
+        X_train,
+        y_train,
+        pipeline=_small_random_forest_pipeline(X_train),
+        param_grid=None,
+        n_splits=2,
+        n_iter=2,
+        model_type="random-forest",
+        random_state=17,
+        n_jobs=1,
+        get_only_model=True,
+        peptide_prefixes=PEPTIDE_PREFIXES,
+    )
+    assert isinstance(fitted, Pipeline)
+
+    result = train_and_validate_model(
+        X_train,
+        y_train,
+        X_test=X_external,
+        y_test=y_external,
+        best_estimator=fitted,
+        model_type="random-forest",
+        random_state=17,
+        peptide_prefixes=PEPTIDE_PREFIXES,
+    )
+
+    assert isinstance(result, tuple) and len(result) == 5
+    model, shap_values, scores, metrics, selected_features = result
+    assert model is fitted
+    assert scores.index.equals(X_external.index)
+    assert scores.notna().all()
+    assert shap_values.index.equals(X_external.index)
+    assert shap_values.notna().all().all()
+    assert selected_features
+
+    roc_auc = float(metrics["roc"]["auc"])
+    pr_auc = float(metrics["pr"]["ap"])
+    assert 0.65 <= roc_auc < 0.95
+    assert 0.65 <= pr_auc < 0.95
+
+
+def test_real_noisy_external_validation_with_joint_tuning() -> None:
+    """Tune selector/forest settings before evaluating an external cohort."""
+    X_train, y_train = _noisy_synthetic_classification_data(
+        60,
+        seed=11,
+        sample_prefix="TUNED_TRAIN",
+        flip_fraction=0.20,
+    )
+    X_external, y_external = _noisy_synthetic_classification_data(
+        40,
+        seed=21,
+        sample_prefix="TUNED_EXTERNAL",
+        flip_fraction=0.20,
+    )
+
+    fitted = train_and_validate_model(
+        X_train,
+        y_train,
+        pipeline=_small_random_forest_pipeline(X_train),
+        param_grid=_small_joint_search_space(),
+        n_splits=2,
+        n_iter=4,
+        model_type="random-forest",
+        random_state=17,
+        n_jobs=1,
+        get_only_model=True,
+        peptide_prefixes=PEPTIDE_PREFIXES,
+    )
+    assert isinstance(fitted, Pipeline)
+
+    parameters = fitted.get_params()
+    assert 0.35 <= parameters[
+        "preprocessor__peptides__feature_selection__estimator__l1_ratio"
+    ] <= 0.65
+    assert 0.5 <= parameters[
+        "preprocessor__peptides__feature_selection__estimator__C"
+    ] <= 2.0
+    assert 20 <= parameters["estimator__n_estimators"] <= 50
+
+    result = train_and_validate_model(
+        X_train,
+        y_train,
+        X_test=X_external,
+        y_test=y_external,
+        best_estimator=fitted,
+        model_type="random-forest",
+        random_state=17,
+        peptide_prefixes=PEPTIDE_PREFIXES,
+    )
+
+    assert isinstance(result, tuple) and len(result) == 5
+    _, shap_values, scores, metrics, selected_features = result
+    assert scores.index.equals(X_external.index)
+    assert scores.notna().all()
+    assert shap_values.index.equals(X_external.index)
+    assert shap_values.notna().all().all()
+    assert selected_features
+
+    roc_auc = float(metrics["roc"]["auc"])
+    pr_auc = float(metrics["pr"]["ap"])
+    assert 0.60 <= roc_auc < 0.98
+    assert 0.60 <= pr_auc < 0.98
 
 
 def test_real_bootstrap_auc_returns_finite_uncertainty() -> None:

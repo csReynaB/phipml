@@ -1,0 +1,116 @@
+# Synthetic noisy-signal example with genuine nested Bayesian tuning.
+# This directory is self-contained; all paths are relative to this YAML file.
+
+metadata_input: metadata_tuned_noisy.csv
+data_input: data_tuned_noisy.csv
+data_input_mode: matrix
+
+project: mock_tuned_noisy_signal
+group_tests:
+  - Control
+  - Case
+
+col_sample_name: SampleName
+col_target: group_test
+random_state: 420
+
+extra_features_to_include:
+  - Sex
+  - Smoking
+  - Age
+  - BMI
+
+peptide_prefixes:
+  - agilent_
+  - twist_
+  - corona2_
+
+# The input matrix is peptide x sample.
+transposed: true
+fillna_value: null
+filters_metadata: null
+combined_filters_metadata: null
+oligo_filters: null
+oligo_filter_mode: all
+
+classification:
+  model_type: random-forest
+  param_grid_name: random-forest
+  seed: 420
+
+  # Run tuned nested CV, then repeat the inner search on the complete cohort
+  # and save the resulting full-cohort model for later reuse.
+  run_nested_cv: true
+  use_pretrained: false
+  only_train_model: true
+
+  subgroup: all
+  oligo_filters: null
+  oligo_filter_mode: all
+  with_oligos: true
+  with_additional_features: true
+  prevalence_threshold_min: 0
+  prevalence_threshold_max: 100
+
+  outer_cv_splits: 3
+  inner_cv_splits: 2
+  n_iter: 8
+
+  # Avoid nested parallelism: parallelize only the inner Bayesian search.
+  n_jobs_outer: 1
+  n_jobs_inner: -1
+
+  impute_extra_numeric: false
+  extra_numeric_impute_strategy: median
+  fill_missing_peptides_with_zero: true
+
+  train_filters: null
+  split_filters: null
+  split_only: false
+  validation_sets: []
+
+  output_dir: results_tuned
+  output_name: tuned_noisy_demo
+
+param_grid:
+  random-forest:
+    # Elastic-net peptide feature selector.
+    preprocessor__peptides__feature_selection__estimator__l1_ratio:
+      type: real
+      low: 0.2
+      high: 0.8
+      prior: uniform
+
+    preprocessor__peptides__feature_selection__estimator__C:
+      type: real
+      low: 0.01
+      high: 10.0
+      prior: log-uniform
+
+    # Random Forest estimator.
+    estimator__n_estimators:
+      type: integer
+      low: 50
+      high: 200
+
+    estimator__max_depth:
+      type: integer
+      low: 2
+      high: 10
+
+    estimator__min_samples_split:
+      type: integer
+      low: 2
+      high: 10
+
+    estimator__min_samples_leaf:
+      type: integer
+      low: 1
+      high: 5
+
+    estimator__max_features:
+      type: categorical
+      categories:
+        - sqrt
+        - log2
+        - 0.5

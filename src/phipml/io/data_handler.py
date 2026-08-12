@@ -723,17 +723,17 @@ class OligosHandler:
                 if not stripped or stripped.startswith("#"):
                     continue
 
-                fields = [field.strip() for field in raw_line.rstrip().split("\t")]
-                if first_entry and self._is_manifest_header(fields):
+                fields_tmp = [field_tmp.strip() for field_tmp in raw_line.rstrip().split("\t")]
+                if first_entry and self._is_manifest_header(fields_tmp):
                     first_entry = False
                     continue
                 first_entry = False
 
-                if len(fields) == 1:
+                if len(fields_tmp) == 1:
                     sample_name = None
-                    path_text = fields[0]
-                elif len(fields) == 2:
-                    sample_name, path_text = fields
+                    path_text = fields_tmp[0]
+                elif len(fields_tmp) == 2:
+                    sample_name, path_text = fields_tmp
                     if not sample_name:
                         raise ValueError(
                             f"Empty sample name in {manifest} line {line_number}"
@@ -763,8 +763,8 @@ class OligosHandler:
         return specs
 
     @staticmethod
-    def _is_manifest_header(fields: list[str]) -> bool:
-        normalised = [field.lower() for field in fields]
+    def _is_manifest_header(fields_tmp: list[str]) -> bool:
+        normalised = [field_tmp.lower() for field_tmp in fields_tmp]
         return normalised in [
             ["path"],
             ["file"],

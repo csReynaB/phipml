@@ -318,8 +318,6 @@ def _param_grid(
         return None
     return config.get_bayesian_param_grid(settings.param_grid_name)
 
-
-# move to train_test_utils.py and call it on top as from phipml.classification.train_test_utils import ( ... load_validation_cohort,)
 def _load_validation_cohort(
     config: Config,
     settings: ClassificationRunSettings,
@@ -443,7 +441,7 @@ def main(argv: list[str] | None = None) -> int:
             random_state=settings.seed,
             peptide_prefixes=config.peptide_prefixes,
             impute_extra_numeric=settings.impute_extra_numeric,
-            extra_numeric_impute_strategy=(settings.extra_numeric_impute_strategy),
+            extra_numeric_impute_strategy=settings.extra_numeric_impute_strategy,
         )
         param_grid = _param_grid(config, settings)
 
@@ -468,7 +466,7 @@ def main(argv: list[str] | None = None) -> int:
             n_jobs_inner=settings.n_jobs_inner,
             peptide_prefixes=config.peptide_prefixes,
             impute_extra_numeric=settings.impute_extra_numeric,
-            extra_numeric_impute_strategy=(settings.extra_numeric_impute_strategy),
+            extra_numeric_impute_strategy=settings.extra_numeric_impute_strategy,
         )
         (
             models,
@@ -485,8 +483,8 @@ def main(argv: list[str] | None = None) -> int:
                 "scores_train": train_scores,
                 "validation_indices_train": validation_indices,
                 "metrics_train": train_metrics,
-                "roc_metrics_train": train_metrics["roc"],
-                "pr_metrics_train": train_metrics["pr"],
+                #"roc_metrics_train": train_metrics["roc"],
+                #"pr_metrics_train": train_metrics["pr"]
                 "selected_features_train": selected_features,
             },
             settings.output_dir
@@ -525,7 +523,7 @@ def main(argv: list[str] | None = None) -> int:
             get_only_model=True,
             peptide_prefixes=config.peptide_prefixes,
             impute_extra_numeric=settings.impute_extra_numeric,
-            extra_numeric_impute_strategy=(settings.extra_numeric_impute_strategy),
+            extra_numeric_impute_strategy=settings.extra_numeric_impute_strategy,
         )
         if not isinstance(fitted, Pipeline):
             raise RuntimeError("Full-cohort training did not return a fitted Pipeline")
@@ -583,7 +581,7 @@ def main(argv: list[str] | None = None) -> int:
             random_state=settings.seed,
             get_only_model=False,
             peptide_prefixes=config.peptide_prefixes,
-            fill_missing_peptides_with_zero=(settings.fill_missing_peptides_with_zero),
+            fill_missing_peptides_with_zero=settings.fill_missing_peptides_with_zero,
             return_feature_report=True,
         )
         if not isinstance(validation_result, tuple):
@@ -606,8 +604,8 @@ def main(argv: list[str] | None = None) -> int:
                 "test_shap_values": test_shap,
                 "scores_test": test_scores,
                 "metrics_test": test_metrics,
-                "roc_metrics_test": test_metrics["roc"],
-                "pr_metrics_test": test_metrics["pr"],
+                #,"roc_metrics_test": test_metrics["roc"],
+                #"pr_metrics_test": test_metrics["pr"],
                 "selected_features_test": selected_test_features,
                 "feature_report": feature_report,
             },

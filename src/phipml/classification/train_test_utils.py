@@ -401,9 +401,10 @@ def concatenate_datasets(
     second_X: pd.DataFrame,
     second_y: pd.Series,
 ) -> tuple[pd.DataFrame, pd.Series]:
-    """Concatenate cohorts after validating their feature and sample identities."""
+    """Concatenate cohorts after validating feature and sample identities."""
     missing_from_second = first_X.columns.difference(second_X.columns).tolist()
     missing_from_first = second_X.columns.difference(first_X.columns).tolist()
+
     if missing_from_second or missing_from_first:
         raise ValueError(
             "Cohorts do not expose the same raw features. "
@@ -411,11 +412,26 @@ def concatenate_datasets(
             f"missing from first: {missing_from_first[:10]}"
         )
 
-    second_X = second_X.loc[:, first_X.columns]
-    X = pd.concat([first_X, second_X], axis=0)
-    y = pd.concat([first_y, second_y], axis=0)
+    # Reorder the second cohort to match the first cohort exactly.
+    column_order = first_X.columns.tolist()
+    second_X_aligned: pd.DataFrame = second_X.loc[:, column_order].copy()
+
+    X: pd.DataFrame = pd.concat(
+        (first_X, second_X_aligned),
+        axis="index",
+    )
+    y: pd.Series = pd.concat(
+        (first_y, second_y),
+        axis="index",
+    )
+
     duplicated = X.index[X.index.duplicated()].unique().tolist()
     if duplicated:
-        raise ValueError(f"Cohorts contain duplicate sample IDs: {duplicated[:10]}")
-    y = y.loc[X.index]
+        raise ValueError(
+            f"Cohorts contain duplicate sample IDs: {duplicated[:10]}"
+        )
+
+    # Reorder the target to match the combined feature matrix.
+    y = y.reindex(X.index)
+
     return X, y

@@ -244,12 +244,39 @@ def test_real_nested_cv_fits_models_calculates_metrics_and_shap() -> None:
 
     roc = metrics["roc"]
     pr = metrics["pr"]
+    classification = metrics["classification"]
     _assert_probability_metric(roc["auc"], "mean ROC-AUC")
     _assert_probability_metric(pr["ap"], "mean PR-AUC")
+    for metric_name in (
+        "accuracy",
+        "balanced_accuracy",
+        "precision",
+        "recall",
+        "sensitivity",
+        "specificity",
+        "negative_predictive_value",
+        "f1",
+    ):
+        _assert_probability_metric(
+            classification[metric_name],
+            f"classification {metric_name}",
+        )
+    assert -1.0 <= float(classification["mcc"]) <= 1.0
+    assert classification["threshold"] == pytest.approx(0.5)
+    confusion_count = sum(
+        int(classification[key])
+        for key in (
+            "true_negatives",
+            "false_positives",
+            "false_negatives",
+            "true_positives",
+        )
+    )
+    assert confusion_count == len(X)
     assert np.asarray(roc["fpr"]).shape == (200,)
     assert np.asarray(roc["tpr"]).shape == (200,)
     assert np.asarray(pr["recall"]).shape == (200,)
-    assert np.asarray(pr["pr"]).shape == (200,)
+    assert np.asarray(pr["precision"]).shape == (200,)
 
     # The synthetic signal is intentionally strong; this also detects an
     # accidental target/probability inversion.

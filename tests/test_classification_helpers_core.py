@@ -84,7 +84,7 @@ def test_calculate_pr_metrics_aggregates_curves_and_ap() -> None:
         [0.0, 0.5, 1.0],
     )
 
-    np.testing.assert_allclose(metrics["pr"], [1.0, 0.8, 0.45])
+    np.testing.assert_allclose(metrics["precision"], [1.0, 0.8, 0.45])
     assert metrics["ap"] == pytest.approx(0.7)
     assert metrics["ap_std"] > 0
 
@@ -103,6 +103,41 @@ def test_interpolated_roc_and_pr_have_expected_shapes() -> None:
     assert precision[0] == 1.0
     assert roc_auc == pytest.approx(1.0)
     assert average_precision == pytest.approx(1.0)
+
+
+def test_classification_metrics_use_the_recorded_threshold() -> None:
+    metrics = helpers.calculate_classification_metrics(
+        [0, 0, 1, 1],
+        [0.1, 0.7, 0.8, 0.4],
+        threshold=0.5,
+    )
+
+    assert metrics["threshold"] == pytest.approx(0.5)
+    assert metrics["accuracy"] == pytest.approx(0.5)
+    assert metrics["balanced_accuracy"] == pytest.approx(0.5)
+    assert metrics["precision"] == pytest.approx(0.5)
+    assert metrics["recall"] == pytest.approx(0.5)
+    assert metrics["sensitivity"] == pytest.approx(0.5)
+    assert metrics["specificity"] == pytest.approx(0.5)
+    assert metrics["negative_predictive_value"] == pytest.approx(0.5)
+    assert metrics["f1"] == pytest.approx(0.5)
+    assert metrics["mcc"] == pytest.approx(0.0)
+    assert metrics["true_negatives"] == 1
+    assert metrics["false_positives"] == 1
+    assert metrics["false_negatives"] == 1
+    assert metrics["true_positives"] == 1
+    assert metrics["support_negative"] == 2
+    assert metrics["support_positive"] == 2
+
+
+@pytest.mark.parametrize("threshold", [-0.01, 1.01])
+def test_classification_metrics_reject_invalid_threshold(threshold: float) -> None:
+    with pytest.raises(ValueError, match="threshold must be between"):
+        helpers.calculate_classification_metrics(
+            [0, 0, 1, 1],
+            [0.1, 0.2, 0.8, 0.9],
+            threshold=threshold,
+        )
 
 
 @pytest.mark.parametrize(
@@ -321,9 +356,12 @@ def test_train_and_validate_model_returns_metrics_shap_and_report(
     assert model is fitted
     assert shap_values.shape == X_test.shape
     assert scores.index.tolist() == X_test.index.tolist()
-    assert set(metrics) == {"roc", "pr"}
+    assert set(metrics) == {"roc", "pr", "classification"}
     assert 0.0 <= metrics["roc"]["auc"] <= 1.0
     assert 0.0 <= metrics["pr"]["ap"] <= 1.0
+    assert metrics["classification"]["threshold"] == pytest.approx(0.5)
+    assert 0.0 <= metrics["classification"]["accuracy"] <= 1.0
+    assert 0.0 <= metrics["classification"]["f1"] <= 1.0
     assert selected == ["agilent_p1", "Age"]
     assert report["missing_features"] == []
 

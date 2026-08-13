@@ -9,11 +9,10 @@ from typing import Any, TypeAlias
 # Third-party libraries
 # ======================
 import numpy as np
-from numpy.typing import NDArray
-
 import pandas as pd
 import shap
 from joblib import Parallel, delayed
+from numpy.typing import NDArray
 from sklearn.base import clone
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
@@ -21,10 +20,17 @@ from sklearn.feature_selection import SelectFromModel, VarianceThreshold
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
+    accuracy_score,
     auc,
     average_precision_score,
+    balanced_accuracy_score,
+    confusion_matrix,
+    f1_score,
     make_scorer,
+    matthews_corrcoef,
     precision_recall_curve,
+    precision_score,
+    recall_score,
     roc_curve,
 )
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, StratifiedKFold
@@ -40,6 +46,8 @@ logger = logging.getLogger(__name__)
 MetricValue = NDArray[np.float64] | float
 RocMetrics = dict[str, MetricValue]
 CurveMetrics = dict[str, MetricValue]
+ClassificationMetrics = dict[str, float | int]
+DEFAULT_CLASSIFICATION_THRESHOLD = 0.5
 
 # ======================
 # Hyper tuning
@@ -160,6 +168,100 @@ def search_best_model(
 # ##############################
 #           Metrics            #
 # ##############################
+def calculate_classification_metrics(
+    y_true: Iterable[int] | pd.Series,
+    positive_class_scores: Iterable[float] | pd.Series,
+    *,
+    threshold: float = DEFAULT_CLASSIFICATION_THRESHOLD,
+) -> ClassificationMetrics:
+    """Calculate threshold-dependent metrics for binary classification.
+
+    ROC-AUC and average precision evaluate the continuous scores across all
+    possible thresholds. These complementary metrics first convert the
+    positive-class scores to predictions using ``score >= threshold``.
+    """
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError("threshold must be between 0 and 1")
+
+    target = np.asarray(list(y_true), dtype=np.int64)
+    scores = np.asarray(list(positive_class_scores), dtype=np.float64)
+    if target.ndim != 1 or scores.ndim != 1:
+        raise ValueError("y_true and positive_class_scores must be one-dimensional")
+    if target.size != scores.size:
+        raise ValueError("y_true and positive_class_scores must have equal length")
+    if target.size == 0:
+        raise ValueError("Cannot calculate classification metrics for empty inputs")
+    if not np.isfinite(scores).all():
+        raise ValueError("positive_class_scores contains NaN or infinite values")
+
+    classes = set(np.unique(target).tolist())
+    if classes != {0, 1}:
+        raise ValueError(
+            "Binary classification metrics require targets encoded as 0 and 1; "
+            f"found {sorted(classes)}"
+        )
+
+    predictions: NDArray[np.int64] = np.asarray(
+        scores >= threshold,
+        dtype=np.int64,
+    )
+    tn, fp, fn, tp = (
+        int(value)
+        for value in confusion_matrix(target, predictions, labels=[0, 1]).ravel()
+    )
+    specificity = tn / (tn + fp)
+    negative_predictive_value = tn / (tn + fn) if tn + fn else 0.0
+    recall = float(recall_score(target, predictions, zero_division=0))
+
+    return {
+        "threshold": float(threshold),
+        "accuracy": float(accuracy_score(target, predictions)),
+        "balanced_accuracy": float(balanced_accuracy_score(target, predictions)),
+        "precision": float(precision_score(target, predictions, zero_division=0)),
+        "recall": recall,
+        "sensitivity": recall,
+        "specificity": float(specificity),
+        "negative_predictive_value": float(negative_predictive_value),
+        "f1": float(f1_score(target, predictions, zero_division=0)),
+        "mcc": float(matthews_corrcoef(target, predictions)),
+        "true_negatives": tn,
+        "false_positives": fp,
+        "false_negatives": fn,
+        "true_positives": tp,
+        "support_negative": tn + fp,
+        "support_positive": tp + fn,
+    }
+
+
+def _log_classification_metrics(
+    context: str,
+    metrics: ClassificationMetrics,
+) -> None:
+    """Log threshold metrics consistently for nested and external validation."""
+    logger.info(
+        "%s at threshold %.2f: accuracy=%.3f, balanced_accuracy=%.3f, "
+        "precision=%.3f, recall/sensitivity=%.3f, specificity=%.3f, "
+        "F1=%.3f, MCC=%.3f",
+        context,
+        metrics["threshold"],
+        metrics["accuracy"],
+        metrics["balanced_accuracy"],
+        metrics["precision"],
+        metrics["recall"],
+        metrics["specificity"],
+        metrics["f1"],
+        metrics["mcc"],
+    )
+    logger.info(
+        "%s confusion matrix: TN=%d, FP=%d, FN=%d, TP=%d",
+        context,
+        metrics["true_negatives"],
+        metrics["false_positives"],
+        metrics["false_negatives"],
+        metrics["true_positives"],
+    )
+
+
 def calculate_mean_std_ci_tpr_auc(
     auc_list: Sequence[float] | NDArray[np.float64],
     tpr_list: Sequence[Sequence[float]] | NDArray[np.float64],
@@ -351,9 +453,9 @@ def calculate_mean_std_ci_precision_ap(
 
     return {
         "recall": mean_recall_array,
-        "pr": mean_precision,
-        "pr_upper": prec_upper,
-        "pr_lower": prec_lower,
+        "precision": mean_precision,
+        "precision_upper": prec_upper,
+        "precision_lower": prec_lower,
         "ap": ap_mean,
         "ap_std": ap_std,
     }
@@ -378,9 +480,9 @@ def calculate_mean_std_ci_precision_ap(
 #
 #     pr_metrics = {
 #         "recall": mean_recall,
-#         "pr": mean_precision,
-#         "pr_upper": prec_upper,
-#         "pr_lower": prec_lower,
+#         "precision": mean_precision,
+#         "precision_upper": prec_upper,
+#         "precision_lower": prec_lower,
 #         "ap": ap_mean,
 #         "ap_std": ap_std,
 #     }
@@ -434,7 +536,7 @@ def bootstrap_auc(
 
 def compute_interp_tpr_auc(y_true, y_pred_proba, mean_fpr):
     """
-    PR-curve analogue of ROC interpolation.
+    Interpolate an ROC curve onto a common false-positive-rate grid.
 
     Returns
     -------
@@ -461,7 +563,7 @@ def compute_interp_tpr_auc(y_true, y_pred_proba, mean_fpr):
 
 def compute_interp_pr_ap(y_true, y_pred_proba, mean_recall):
     """
-    PR-curve analogue of ROC interpolation.
+    Interpolate precision onto a common recall grid and calculate AP.
 
     Returns
     -------
@@ -500,16 +602,16 @@ def compute_interp_pr_ap(y_true, y_pred_proba, mean_recall):
 ######TEST############
 
 
-def _compute_metrics_test(y_test, y_pred, mean_ip):
+def _compute_metrics_test(y_test, y_pred, common_grid):
     """Compute metrics for the test set."""
-    interp_tpr, auc_value = compute_interp_tpr_auc(y_test, y_pred, mean_ip)
-    interp_pr, ap_value = compute_interp_pr_ap(y_test, y_pred, mean_ip)
+    interp_tpr, auc_value = compute_interp_tpr_auc(y_test, y_pred, common_grid)
+    interp_pr, ap_value = compute_interp_pr_ap(y_test, y_pred, common_grid)
     metrics = {
-        "fpr": mean_ip,
+        "fpr": common_grid,
         "tpr": interp_tpr,
         "auc": auc_value,
-        "recall": mean_ip,
-        "pr": interp_pr,
+        "recall": common_grid,
+        "precision": interp_pr,
         "ap": ap_value,
     }
 
@@ -1041,20 +1143,36 @@ def nested_cv(
         )
 
     interpolation_grid = np.linspace(0, 1, 200)
-    metrics = {
-        "roc": calculate_mean_std_ci_tpr_auc(
-            auc_values,
-            interpolated_tprs,
-            interpolation_grid,
-        ),
-        "pr": calculate_mean_std_ci_precision_ap(
-            average_precisions,
-            interpolated_precisions,
-            interpolation_grid,
-        ),
+
+    roc_metrics = calculate_mean_std_ci_tpr_auc(
+        auc_values,
+        interpolated_tprs,
+        interpolation_grid,
+    )
+
+    pr_metrics = calculate_mean_std_ci_precision_ap(
+        average_precisions,
+        interpolated_precisions,
+        interpolation_grid,
+    )
+
+    classification_metrics: ClassificationMetrics = calculate_classification_metrics(
+        y_train,
+        scores,
+    )
+
+    metrics: dict[str, dict[str, Any]] = {
+        "roc": roc_metrics,
+        "pr": pr_metrics,
+        "classification": classification_metrics,
     }
+
     logger.info("Mean ROC-AUC across folds: %.3f", metrics["roc"]["auc"])
     logger.info("Mean Average Precision (AP) across folds: %.3f", metrics["pr"]["ap"])
+    _log_classification_metrics(
+        "Out-of-fold classification metrics",
+        metrics["classification"],
+    )
 
     return (
         models,
@@ -1262,9 +1380,13 @@ def train_and_validate_model(
         },
         "pr": {
             "recall": flat_metrics["recall"],
-            "pr": flat_metrics["pr"],
+            "precision": flat_metrics["precision"],
             "ap": flat_metrics["ap"],
         },
+        "classification": calculate_classification_metrics(
+            y_test,
+            scores_array,
+        ),
     }
 
     selected_shap, selected_features = _compute_shap_frame(
@@ -1283,6 +1405,10 @@ def train_and_validate_model(
 
     logger.info("ROC-AUC in validation set: %.3f", metrics["roc"]["auc"])
     logger.info("Average Precision (AP) in validation set: %.3f", metrics["pr"]["ap"])
+    _log_classification_metrics(
+        "Validation classification metrics",
+        metrics["classification"],
+    )
 
     result: ValidationResult = (
         best_estimator,

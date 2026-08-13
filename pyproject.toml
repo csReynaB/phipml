@@ -27,32 +27,35 @@ authors = [
 # (DOCUMENTATION + OPTIONAL pip editable install or conda)
 # ---------------------------------------------------------------------
 dependencies = [
-  # Core
   "numpy",
   "pandas",
   "scipy",
-
-  # Utilities
   "joblib",
   "tqdm",
   "pyyaml",
   "openpyxl",
-
-  # ML / optimization
+  "xlrd",
   "scikit-learn",
-  "scikit-optimize",
   "xgboost",
-
-  # Survival analysis
-  #"scikit-survival",
-  #"lifelines",
-
-  # Explainability
+  "scikit-optimize",
   "shap",
-
-  # Plotting
   "matplotlib",
   "seaborn",
+]
+
+[project.optional-dependencies]
+notebook = [
+  "jupyterlab",
+  "ipykernel",
+  "tabulate",
+]
+
+dev = [
+  "black",
+  "isort",
+  "ruff",
+  "pre-commit",
+  "pytest",
 ]
 # ---------------------------------------------------------------------
 # Optional dependencies (DEV ONLY)
@@ -62,14 +65,6 @@ dependencies = [
 [project.scripts]
 phipml = "phipml.cli.train_test:main"
 
-[project.optional-dependencies]
-dev = [
-  "black",
-  "isort",
-  "ruff",
-  "pre-commit",
-  "jupyterlab",
-]
 # ---------------------------------------------------------------------
 # Black — formatter
 # ---------------------------------------------------------------------

@@ -427,9 +427,7 @@ def concatenate_datasets(
 
     duplicated = X.index[X.index.duplicated()].unique().tolist()
     if duplicated:
-        raise ValueError(
-            f"Cohorts contain duplicate sample IDs: {duplicated[:10]}"
-        )
+        raise ValueError(f"Cohorts contain duplicate sample IDs: {duplicated[:10]}")
 
     # Reorder the target to match the combined feature matrix.
     y = y.reindex(X.index)

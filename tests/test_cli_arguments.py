@@ -7,7 +7,6 @@ import pytest
 from phipml import __version__
 from phipml.cli.train_test import parse_args_classification
 
-
 BOOLEAN_DESTINATIONS = (
     "run_nested_cv",
     "use_pretrained",
@@ -58,9 +57,7 @@ def test_boolean_options_accept_positive_and_negative_forms(
 
 def test_boolean_options_do_not_accept_string_values() -> None:
     with pytest.raises(SystemExit):
-        parse_args_classification(
-            ["--config", "config.yaml", "--with-oligos", "false"]
-        )
+        parse_args_classification(["--config", "config.yaml", "--with-oligos", "false"])
 
 
 def test_version_option_does_not_require_a_config(

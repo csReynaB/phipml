@@ -35,8 +35,7 @@ def _write_sample_file(
 
 def _write_metadata(tmp_path: Path, sample_names: list[str]) -> None:
     groups = [
-        "Control" if index % 2 == 0 else "Case"
-        for index in range(len(sample_names))
+        "Control" if index % 2 == 0 else "Case" for index in range(len(sample_names))
     ]
     pd.DataFrame(
         {

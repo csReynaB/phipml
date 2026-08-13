@@ -337,8 +337,8 @@ def test_train_and_validate_model_returns_metrics_shap_and_report(
         X: pd.DataFrame,
     ) -> tuple[pd.DataFrame, list[str]]:
         del pipeline
-        selected = ["agilent_p1", "Age"]
-        return pd.DataFrame(0.5, index=X.index, columns=selected), selected
+        selected_tmp = ["agilent_p1", "Age"]
+        return pd.DataFrame(0.5, index=X.index, columns=selected_tmp), selected_tmp
 
     monkeypatch.setattr(helpers, "_compute_shap_frame", fake_shap)
 

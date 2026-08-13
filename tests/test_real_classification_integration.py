@@ -28,7 +28,6 @@ from phipml.classification.helpers import (
 )
 from phipml.cli.train_test import main
 
-
 PEPTIDE_PREFIXES = ("agilent_", "twist_", "corona2_")
 N_PEPTIDES = 50
 MISSING_EXTERNAL_PEPTIDE = "corona2_noise_02"
@@ -37,9 +36,7 @@ MISSING_EXTERNAL_PEPTIDE = "corona2_noise_02"
 def _peptide_columns(X: pd.DataFrame) -> list[str]:
     """Return peptide columns using the same prefixes as the real pipeline."""
     return [
-        str(column)
-        for column in X.columns
-        if str(column).startswith(PEPTIDE_PREFIXES)
+        str(column) for column in X.columns if str(column).startswith(PEPTIDE_PREFIXES)
     ]
 
 
@@ -154,9 +151,7 @@ def _noisy_synthetic_classification_data(
 
     flipped_index = X.index[flipped_positions]
     for signal_column in ("agilent_signal", "twist_signal"):
-        X.loc[flipped_index, signal_column] = (
-            1 - X.loc[flipped_index, signal_column]
-        )
+        X.loc[flipped_index, signal_column] = 1 - X.loc[flipped_index, signal_column]
     return X, y
 
 
@@ -177,9 +172,7 @@ def test_real_nested_cv_fits_models_calculates_metrics_and_shap() -> None:
     pipeline = _small_random_forest_pipeline(X)
     preprocessor = pipeline.named_steps["preprocessor"]
     peptide_inputs = next(
-        columns
-        for name, _, columns in preprocessor.transformers
-        if name == "peptides"
+        columns for name, _, columns in preprocessor.transformers if name == "peptides"
     )
     binary_inputs = next(
         columns
@@ -238,8 +231,7 @@ def test_real_nested_cv_fits_models_calculates_metrics_and_shap() -> None:
     assert len(selected_feature_sets) == 3
     assert all(selected for selected in selected_feature_sets)
     assert all(
-        set(selected).issubset(set(X.columns))
-        for selected in selected_feature_sets
+        set(selected).issubset(set(X.columns)) for selected in selected_feature_sets
     )
 
     roc = metrics["roc"]
@@ -385,12 +377,18 @@ def test_real_nested_cv_jointly_tunes_selector_and_random_forest() -> None:
 
     for model in models:
         parameters = model.get_params()
-        assert 0.35 <= parameters[
-            "preprocessor__peptides__feature_selection__estimator__l1_ratio"
-        ] <= 0.65
-        assert 0.5 <= parameters[
-            "preprocessor__peptides__feature_selection__estimator__C"
-        ] <= 2.0
+        assert (
+            0.35
+            <= parameters[
+                "preprocessor__peptides__feature_selection__estimator__l1_ratio"
+            ]
+            <= 0.65
+        )
+        assert (
+            0.5
+            <= parameters["preprocessor__peptides__feature_selection__estimator__C"]
+            <= 2.0
+        )
         assert 20 <= parameters["estimator__n_estimators"] <= 50
         assert 2 <= parameters["estimator__max_depth"] <= 5
         assert 1 <= parameters["estimator__min_samples_leaf"] <= 3
@@ -591,12 +589,16 @@ def test_real_noisy_external_validation_with_joint_tuning() -> None:
     assert isinstance(fitted, Pipeline)
 
     parameters = fitted.get_params()
-    assert 0.35 <= parameters[
-        "preprocessor__peptides__feature_selection__estimator__l1_ratio"
-    ] <= 0.65
-    assert 0.5 <= parameters[
-        "preprocessor__peptides__feature_selection__estimator__C"
-    ] <= 2.0
+    assert (
+        0.35
+        <= parameters["preprocessor__peptides__feature_selection__estimator__l1_ratio"]
+        <= 0.65
+    )
+    assert (
+        0.5
+        <= parameters["preprocessor__peptides__feature_selection__estimator__C"]
+        <= 2.0
+    )
     assert 20 <= parameters["estimator__n_estimators"] <= 50
 
     result = train_and_validate_model(
@@ -656,9 +658,7 @@ def test_real_bootstrap_auc_returns_finite_uncertainty() -> None:
     _assert_probability_metric(metrics["boot_auc_ci_lower"], "bootstrap lower CI")
     _assert_probability_metric(metrics["boot_auc_ci_upper"], "bootstrap upper CI")
     assert float(metrics["boot_auc_std"]) >= 0.0
-    assert float(metrics["boot_auc_ci_lower"]) <= float(
-        metrics["boot_auc_ci_upper"]
-    )
+    assert float(metrics["boot_auc_ci_lower"]) <= float(metrics["boot_auc_ci_upper"])
 
 
 def test_real_cli_yaml_to_saved_training_model(tmp_path: Path) -> None:
@@ -715,11 +715,7 @@ def test_real_cli_yaml_to_saved_training_model(tmp_path: Path) -> None:
 
     assert main(["--config", str(config_path)]) == 0
 
-    model_path = (
-        tmp_path
-        / "results"
-        / "training_random-forest_synthetic_420.joblib"
-    )
+    model_path = tmp_path / "results" / "training_random-forest_synthetic_420.joblib"
     assert model_path.is_file()
     saved = joblib.load(model_path)
     assert set(saved) == {"best_estimator"}

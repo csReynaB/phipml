@@ -167,7 +167,7 @@ class Config:
     def set_group_tests(self, group_tests: Sequence[Any]) -> None:
         """Replace target groups and refresh their positional encodings."""
         if isinstance(group_tests, (str, bytes)) or not isinstance(
-                group_tests, Sequence
+            group_tests, Sequence
         ):
             raise TypeError("group_tests must be a sequence of at least two labels")
         self.group_tests = list(group_tests)
@@ -182,7 +182,7 @@ class Config:
         """
 
         def resolve(
-                value: str | Path | None,
+            value: str | Path | None,
         ) -> Path | None:
             if value is None:
                 return None
@@ -251,16 +251,16 @@ class Config:
         self.sample_file_patterns = normalised_patterns
 
         if (
-                not isinstance(self.sample_file_peptide_column, str)
-                or not self.sample_file_peptide_column.strip()
+            not isinstance(self.sample_file_peptide_column, str)
+            or not self.sample_file_peptide_column.strip()
         ):
             raise ValueError("sample_file_peptide_column must be a non-empty string")
         self.sample_file_peptide_column = self.sample_file_peptide_column.strip()
 
         if self.sample_name_regex is not None:
             if (
-                    not isinstance(self.sample_name_regex, str)
-                    or not self.sample_name_regex
+                not isinstance(self.sample_name_regex, str)
+                or not self.sample_name_regex
             ):
                 raise ValueError("sample_name_regex must be a non-empty string or null")
             try:
@@ -293,18 +293,18 @@ class Config:
             raise ValueError(f"Missing mandatory configuration keys: {missing}")
         self._validate_group_tests()
         if isinstance(self.extra_features_to_include, (str, bytes)) or not isinstance(
-                self.extra_features_to_include, Sequence
+            self.extra_features_to_include, Sequence
         ):
             raise TypeError("extra_features_to_include must be a sequence of names")
         if not all(
-                isinstance(column, str) and column
-                for column in self.extra_features_to_include
+            isinstance(column, str) and column
+            for column in self.extra_features_to_include
         ):
             raise ValueError("extra_features_to_include contains an invalid name")
         self.extra_features_to_include = list(self.extra_features_to_include)
 
         if self.filters_metadata is not None and not isinstance(
-                self.filters_metadata, Mapping
+            self.filters_metadata, Mapping
         ):
             raise TypeError("filters_metadata must be a mapping or null")
         if self.filters_metadata is not None:
@@ -312,12 +312,12 @@ class Config:
 
         if self.combined_filters_metadata is not None:
             if isinstance(
-                    self.combined_filters_metadata, (str, bytes)
+                self.combined_filters_metadata, (str, bytes)
             ) or not isinstance(self.combined_filters_metadata, Sequence):
                 raise TypeError("combined_filters_metadata must be a sequence or null")
             if not all(
-                    isinstance(condition, Mapping)
-                    for condition in self.combined_filters_metadata
+                isinstance(condition, Mapping)
+                for condition in self.combined_filters_metadata
             ):
                 raise TypeError(
                     "Every combined_filters_metadata condition must be a mapping"
@@ -329,7 +329,7 @@ class Config:
         if self.oligo_filter_mode not in {"all", "any"}:
             raise ValueError("oligo_filter_mode must be either 'all' or 'any'")
         if self.oligo_filters is not None and not isinstance(
-                self.oligo_filters, Mapping
+            self.oligo_filters, Mapping
         ):
             raise TypeError("oligo_filters must be a mapping or null")
         if self.oligo_filters is not None:
@@ -348,8 +348,8 @@ class Config:
         # self.survival = dict(self.survival)
 
         if self.lib_col_peptide_name is not None and (
-                not isinstance(self.lib_col_peptide_name, str)
-                or not self.lib_col_peptide_name.strip()
+            not isinstance(self.lib_col_peptide_name, str)
+            or not self.lib_col_peptide_name.strip()
         ):
             raise ValueError("lib_col_peptide_name must be a non-empty string or null")
         if self.lib_col_peptide_name is not None:
@@ -361,8 +361,8 @@ class Config:
             )
 
         if (
-                self.get_data_input_mode() == "matrix"
-                and self.data_input.suffix.lower() not in SUPPORTED_TABLE_EXTENSIONS
+            self.get_data_input_mode() == "matrix"
+            and self.data_input.suffix.lower() not in SUPPORTED_TABLE_EXTENSIONS
         ):
             raise ValueError(
                 f"Unsupported data_input extension: {self.data_input.suffix}. "
@@ -370,9 +370,9 @@ class Config:
                 "data_input_mode: sample-files."
             )
         if (
-                self.lib_metadata_input is not None
-                and self.lib_metadata_input.suffix.lower()
-                not in SUPPORTED_LIBRARY_METADATA_EXTENSIONS
+            self.lib_metadata_input is not None
+            and self.lib_metadata_input.suffix.lower()
+            not in SUPPORTED_LIBRARY_METADATA_EXTENSIONS
         ):
             raise ValueError(
                 "Unsupported lib_metadata_input extension: "
@@ -431,7 +431,7 @@ class Config:
         return converted
 
     def get_bayesian_param_grid_from_dict_items(
-            self, model_type: str = "xgboost"
+        self, model_type: str = "xgboost"
     ) -> dict[str, Any]:
         """Old compatibility wrapper for existing code; converts the grid in place."""
         converted = self.get_bayesian_param_grid(model_type)
@@ -585,14 +585,14 @@ class MetadataHandler:
             values = (
                 list(accepted)
                 if isinstance(accepted, Sequence)
-                   and not isinstance(accepted, (str, bytes))
+                and not isinstance(accepted, (str, bytes))
                 else [accepted]
             )
             mask &= df[column].isin(values)
         return mask
 
     def _apply_and_filter(
-            self, df: pd.DataFrame, condition: Mapping[str, Any]
+        self, df: pd.DataFrame, condition: Mapping[str, Any]
     ) -> pd.DataFrame:
         return df.loc[self._condition_mask(df, condition)]
 
@@ -696,8 +696,8 @@ class OligosHandler:
         )
 
     def _discover_sample_files_in_directory(
-            self,
-            directory: Path,
+        self,
+        directory: Path,
     ) -> list[_SampleFileSpec]:
         paths: dict[Path, None] = {}
         for pattern in self.config.sample_file_patterns:
@@ -723,7 +723,9 @@ class OligosHandler:
                 if not stripped or stripped.startswith("#"):
                     continue
 
-                fields_tmp = [field_tmp.strip() for field_tmp in raw_line.rstrip().split("\t")]
+                fields_tmp = [
+                    field_tmp.strip() for field_tmp in raw_line.rstrip().split("\t")
+                ]
                 if first_entry and self._is_manifest_header(fields_tmp):
                     first_entry = False
                     continue
@@ -868,18 +870,18 @@ class OligosHandler:
 
 class FeatureManager:
     def __init__(
-            self,
-            config: Config,
-            metadata_handler: MetadataHandler,
-            oligos_handler: OligosHandler,
-            *,
-            subgroup: str = "all",
-            oligo_filters: Mapping[str, Any] | None = None,
-            oligo_filter_mode: str | None = None,
-            with_oligos: bool = True,
-            with_additional_features: bool = False,
-            prevalence_threshold_min: float = 0,
-            prevalence_threshold_max: float = 100,
+        self,
+        config: Config,
+        metadata_handler: MetadataHandler,
+        oligos_handler: OligosHandler,
+        *,
+        subgroup: str = "all",
+        oligo_filters: Mapping[str, Any] | None = None,
+        oligo_filter_mode: str | None = None,
+        with_oligos: bool = True,
+        with_additional_features: bool = False,
+        prevalence_threshold_min: float = 0,
+        prevalence_threshold_max: float = 100,
     ):
         self.config = config
         self.metadata_handler = metadata_handler
@@ -935,8 +937,8 @@ class FeatureManager:
 
     @staticmethod
     def _boolean_mask(
-            series: pd.Series,
-            expected: bool,
+        series: pd.Series,
+        expected: bool,
     ) -> pd.Series:
         """Match common Boolean representations."""
         boolean_mapping: dict[str, bool] = {
@@ -1046,9 +1048,9 @@ class FeatureManager:
             self.prevalence_threshold_max,
             inclusive="both",
         )
-        #keep = (prevalence.gt(self.prevalence_threshold_min) &
+        # keep = (prevalence.gt(self.prevalence_threshold_min) &
         #        prevalence.lt(self.prevalence_threshold_max)
-        #)
+        # )
         return peptides.loc[:, keep]
 
     def filter_prevalence(self, features: pd.DataFrame) -> pd.DataFrame:

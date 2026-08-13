@@ -104,11 +104,7 @@ def test_from_sources_resolves_yaml_cli_precedence_and_relative_paths(
 def test_cli_validation_definitions_replace_yaml_definitions(tmp_path: Path) -> None:
     config = _config(
         tmp_path,
-        {
-            "validation_sets": [
-                {"name": "yaml", "filters": {"cohort": "yaml"}}
-            ]
-        },
+        {"validation_sets": [{"name": "yaml", "filters": {"cohort": "yaml"}}]},
     )
     args = Namespace(validate=[['{"cohort":"cli"}', "cli"]])
 
@@ -305,4 +301,3 @@ def test_setup_feature_manager_copies_config_and_overrides_filter(
     assert captured["config"].filters_metadata == {"cohort": "training"}
     assert captured["kwargs"]["prevalence_threshold_min"] == 0
     assert captured["kwargs"]["prevalence_threshold_max"] == 100
-

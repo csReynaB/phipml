@@ -271,8 +271,10 @@ def parse_args_classification(
     )
     return parser.parse_args(argv)
 
+
 # Backward-compatible import name used by existing notebooks/scripts.
-#parse_args_ML = parse_args_classification
+# parse_args_ML = parse_args_classification
+
 
 def _save_result(result: dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -329,6 +331,7 @@ def _param_grid(
         logger.info("No hyperparameter grid configured")
         return None
     return config.get_bayesian_param_grid(settings.param_grid_name)
+
 
 def _load_validation_cohort(
     config: Config,
@@ -495,8 +498,8 @@ def main(argv: list[str] | None = None) -> int:
                 "scores_train": train_scores,
                 "validation_indices_train": validation_indices,
                 "metrics_train": train_metrics,
-                #"roc_metrics_train": train_metrics["roc"],
-                #"pr_metrics_train": train_metrics["pr"]
+                # "roc_metrics_train": train_metrics["roc"],
+                # "pr_metrics_train": train_metrics["pr"]
                 "selected_features_train": selected_features,
             },
             settings.output_dir
@@ -560,10 +563,9 @@ def main(argv: list[str] | None = None) -> int:
     if settings.only_train_model:
         return 0
 
-
-    #---------------------
+    # ---------------------
     # Validation
-    #---------------------
+    # ---------------------
     for validation in validation_sets:
         started = time.perf_counter()
         if settings.split_only:
@@ -616,8 +618,8 @@ def main(argv: list[str] | None = None) -> int:
                 "test_shap_values": test_shap,
                 "scores_test": test_scores,
                 "metrics_test": test_metrics,
-                #,"roc_metrics_test": test_metrics["roc"],
-                #"pr_metrics_test": test_metrics["pr"],
+                # ,"roc_metrics_test": test_metrics["roc"],
+                # "pr_metrics_test": test_metrics["pr"],
                 "selected_features_test": selected_test_features,
                 "feature_report": feature_report,
             },

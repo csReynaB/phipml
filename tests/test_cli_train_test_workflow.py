@@ -19,7 +19,6 @@ from sklearn.pipeline import Pipeline
 import phipml.cli.train_test as cli
 from phipml.classification.train_test_utils import SplitData, ValidationSpec
 
-
 BOOLEAN_OPTIONS = {
     "--run-nested-cv": "run_nested_cv",
     "--use-pretrained": "use_pretrained",
@@ -160,9 +159,7 @@ def test_param_grid_returns_none_or_selected_converted_grid() -> None:
     )
 
     assert cli._param_grid(empty_config, settings) is None
-    assert cli._param_grid(populated_config, settings) == {
-        "selected": "random-forest"
-    }
+    assert cli._param_grid(populated_config, settings) == {"selected": "random-forest"}
 
 
 def test_load_validation_cohort_appends_split_holdout(
@@ -279,12 +276,8 @@ def test_main_runs_nested_cv_trains_saves_and_validates(
 
     assert cli.main(["-c", "unused.yaml"]) == 0
 
-    nested_path = (
-        settings.output_dir / "nested_random-forest_comparison_420.joblib"
-    )
-    training_path = (
-        settings.output_dir / "training_random-forest_comparison_420.joblib"
-    )
+    nested_path = settings.output_dir / "nested_random-forest_comparison_420.joblib"
+    training_path = settings.output_dir / "training_random-forest_comparison_420.joblib"
     validation_path = (
         settings.output_dir / "validation_random-forest_external_420.joblib"
     )

@@ -1,8 +1,10 @@
 # ======================
 # Standard library
 # ======================
+import logging
 import math
 import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -36,6 +38,8 @@ plt.rcParams["axes.labelcolor"] = "black"
 plt.rcParams["xtick.color"] = "black"
 plt.rcParams["ytick.color"] = "black"
 plt.rcParams["axes.titlecolor"] = "black"
+
+logger = logging.getLogger(__name__)
 
 
 def format_pval(p, alpha=0.05):
@@ -858,6 +862,777 @@ def plot_shap_values(
         save_path = figures_dir / f"shap_{safe_groups}_{filename_label}.pdf"
         fig.savefig(save_path, format="pdf", dpi=600, bbox_inches="tight")
 
+    return fig, ax
+
+
+def _first_metric_value(
+    metrics: Mapping[str, object],
+    keys: Sequence[str],
+) -> object | None:
+    """Return the first available non-null metric value."""
+    for key in keys:
+        value = metrics.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _metric_array(
+    metrics: Mapping[str, object],
+    keys: Sequence[str],
+    *,
+    name: str,
+) -> np.ndarray:
+    value = _first_metric_value(metrics, keys)
+    if value is None:
+        raise KeyError(f"Missing {name}; tried metric keys {list(keys)}")
+    array = np.asarray(value, dtype=np.float64)
+    if array.ndim != 1 or array.size < 2:
+        raise ValueError(
+            f"{name} must be a one-dimensional array with at least 2 values"
+        )
+    if not np.isfinite(array).all():
+        raise ValueError(f"{name} contains NaN or infinite values")
+    return array
+
+
+def _metric_float(
+    metrics: Mapping[str, object],
+    keys: Sequence[str],
+    *,
+    name: str,
+) -> float:
+    value = _first_metric_value(metrics, keys)
+    if value is None:
+        raise KeyError(f"Missing {name}; tried metric keys {list(keys)}")
+    numeric = float(value)
+    if not np.isfinite(numeric):
+        raise ValueError(f"{name} must be finite")
+    return numeric
+
+
+def _save_optional_figure(
+    fig: Figure,
+    output_path: str | Path | None,
+    *,
+    dpi: int = 600,
+) -> None:
+    if output_path is None:
+        return
+    path = Path(output_path).expanduser()
+    if path.suffix.lower() not in {".pdf", ".svg", ".png"}:
+        raise ValueError("Figure output must use a .pdf, .svg, or .png extension")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save_kwargs: dict[str, object] = {
+        "bbox_inches": "tight",
+        "facecolor": "white",
+    }
+    if path.suffix.lower() != ".svg":
+        save_kwargs["dpi"] = dpi
+    fig.savefig(path, **save_kwargs)
+
+
+def plot_roc_metrics(
+    roc_metrics: Mapping[str, object],
+    *,
+    ax: Axes | None = None,
+    title: str = "ROC curve",
+    color: str = "#2A6F97",
+    band_color: str = "#89C2D9",
+    uncertainty_label: str | None = None,
+) -> tuple[Figure, Axes]:
+    """Plot ROC metrics saved by one run or aggregated across repeated runs."""
+    fpr = _metric_array(
+        roc_metrics,
+        ("fpr", "mean_fpr", "boot_mean_fpr"),
+        name="false-positive-rate grid",
+    )
+    tpr = _metric_array(
+        roc_metrics,
+        ("tpr", "mean_tpr", "boot_mean_tpr"),
+        name="true-positive-rate curve",
+    )
+    if fpr.shape != tpr.shape:
+        raise ValueError("ROC FPR and TPR arrays must have the same shape")
+    auc_value = _metric_float(
+        roc_metrics,
+        ("auc", "auc_mean", "boot_auc_mean"),
+        name="ROC-AUC",
+    )
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5.5, 5.0))
+    else:
+        fig = ax.figure
+
+    auc_ci_low = _first_metric_value(
+        roc_metrics,
+        ("auc_ci_low", "auc_ci_lower", "boot_auc_ci_lower"),
+    )
+    auc_ci_high = _first_metric_value(
+        roc_metrics,
+        ("auc_ci_high", "auc_ci_upper", "boot_auc_ci_upper"),
+    )
+    auc_std = _first_metric_value(roc_metrics, ("auc_std", "boot_auc_std"))
+    if auc_ci_low is not None and auc_ci_high is not None:
+        curve_label = (
+            f"AUC = {auc_value:.3f} "
+            f"[{float(auc_ci_low):.3f}–{float(auc_ci_high):.3f}]"
+        )
+    elif auc_std is not None:
+        curve_label = f"Mean AUC = {auc_value:.3f} ± {float(auc_std):.3f}"
+    else:
+        curve_label = f"AUC = {auc_value:.3f}"
+
+    ax.plot(fpr, tpr, color=color, linewidth=2.4, label=curve_label)
+    lower_value = _first_metric_value(
+        roc_metrics,
+        ("tprs_lower", "tpr_lower", "boot_tprs_lower"),
+    )
+    upper_value = _first_metric_value(
+        roc_metrics,
+        ("tprs_upper", "tpr_upper", "boot_tprs_upper"),
+    )
+    if lower_value is not None and upper_value is not None:
+        lower = np.asarray(lower_value, dtype=np.float64)
+        upper = np.asarray(upper_value, dtype=np.float64)
+        if lower.shape != fpr.shape or upper.shape != fpr.shape:
+            raise ValueError("ROC uncertainty bands must match the FPR grid")
+        label = uncertainty_label or str(
+            roc_metrics.get("uncertainty_label", "Outer-fold ±1 SD")
+        )
+        ax.fill_between(fpr, lower, upper, color=band_color, alpha=0.32, label=label)
+
+    ax.plot([0, 1], [0, 1], linestyle="--", color="#666666", linewidth=1.2)
+    ax.set(
+        xlim=(0.0, 1.0),
+        ylim=(0.0, 1.02),
+        xlabel="False-positive rate",
+        ylabel="True-positive rate (sensitivity)",
+        title=title,
+    )
+    ax.grid(alpha=0.2)
+    ax.legend(frameon=False, loc="lower right")
+    return fig, ax
+
+
+def plot_precision_recall_metrics(
+    pr_metrics: Mapping[str, object],
+    *,
+    ax: Axes | None = None,
+    title: str = "Precision–recall curve",
+    positive_prevalence: float | None = None,
+    color: str = "#8A5A44",
+    band_color: str = "#DDBEA9",
+    uncertainty_label: str | None = None,
+) -> tuple[Figure, Axes]:
+    """Plot precision–recall metrics from one or repeated model runs."""
+    recall = _metric_array(
+        pr_metrics,
+        ("recall", "mean_recall"),
+        name="recall grid",
+    )
+    precision = _metric_array(
+        pr_metrics,
+        ("precision", "pr", "mean_precision"),
+        name="precision curve",
+    )
+    if recall.shape != precision.shape:
+        raise ValueError("Recall and precision arrays must have the same shape")
+    ap_value = _metric_float(
+        pr_metrics,
+        ("ap", "ap_mean"),
+        name="average precision",
+    )
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5.5, 5.0))
+    else:
+        fig = ax.figure
+
+    ap_ci_low = _first_metric_value(pr_metrics, ("ap_ci_low", "ap_ci_lower"))
+    ap_ci_high = _first_metric_value(pr_metrics, ("ap_ci_high", "ap_ci_upper"))
+    ap_std = _first_metric_value(pr_metrics, ("ap_std",))
+    if ap_ci_low is not None and ap_ci_high is not None:
+        curve_label = (
+            f"AP = {ap_value:.3f} " f"[{float(ap_ci_low):.3f}–{float(ap_ci_high):.3f}]"
+        )
+    elif ap_std is not None:
+        curve_label = f"Mean AP = {ap_value:.3f} ± {float(ap_std):.3f}"
+    else:
+        curve_label = f"AP = {ap_value:.3f}"
+
+    ax.plot(recall, precision, color=color, linewidth=2.4, label=curve_label)
+    lower_value = _first_metric_value(
+        pr_metrics,
+        ("pr_lower", "precision_lower"),
+    )
+    upper_value = _first_metric_value(
+        pr_metrics,
+        ("pr_upper", "precision_upper"),
+    )
+    if lower_value is not None and upper_value is not None:
+        lower = np.asarray(lower_value, dtype=np.float64)
+        upper = np.asarray(upper_value, dtype=np.float64)
+        if lower.shape != recall.shape or upper.shape != recall.shape:
+            raise ValueError("PR uncertainty bands must match the recall grid")
+        label = uncertainty_label or str(
+            pr_metrics.get("uncertainty_label", "Outer-fold ±1 SD")
+        )
+        ax.fill_between(
+            recall,
+            lower,
+            upper,
+            color=band_color,
+            alpha=0.32,
+            label=label,
+        )
+
+    if positive_prevalence is not None:
+        if not 0.0 <= positive_prevalence <= 1.0:
+            raise ValueError("positive_prevalence must be between 0 and 1")
+        ax.axhline(
+            positive_prevalence,
+            linestyle="--",
+            color="#666666",
+            linewidth=1.2,
+            label=f"Baseline = {positive_prevalence:.3f}",
+        )
+    ax.set(
+        xlim=(0.0, 1.0),
+        ylim=(0.0, 1.02),
+        xlabel="Recall (sensitivity)",
+        ylabel="Precision",
+        title=title,
+    )
+    ax.grid(alpha=0.2)
+    ax.legend(frameon=False, loc="lower left")
+    return fig, ax
+
+
+def confusion_matrix_from_metrics(
+    classification_metrics: Mapping[str, object],
+) -> np.ndarray:
+    """Build a 2×2 confusion matrix from saved classification counts."""
+    keys = (
+        "true_negatives",
+        "false_positives",
+        "false_negatives",
+        "true_positives",
+    )
+    missing = [key for key in keys if key not in classification_metrics]
+    if missing:
+        raise KeyError(f"Classification metrics are missing counts: {missing}")
+    values = np.asarray(
+        [classification_metrics[key] for key in keys],
+        dtype=np.float64,
+    )
+    if not np.isfinite(values).all() or (values < 0).any():
+        raise ValueError("Confusion-matrix counts must be finite and non-negative")
+    return values.reshape(2, 2)
+
+
+def plot_confusion_matrix_metrics(
+    classification_metrics: Mapping[str, object],
+    *,
+    class_labels: Sequence[str] = ("Negative", "Positive"),
+    ax: Axes | None = None,
+    title: str = "Confusion matrix",
+    cmap: str = "Blues",
+) -> tuple[Figure, Axes]:
+    """Plot counts and row percentages from a saved confusion matrix."""
+    if len(class_labels) != 2:
+        raise ValueError("class_labels must contain exactly two labels")
+    matrix = confusion_matrix_from_metrics(classification_metrics)
+    row_totals = matrix.sum(axis=1, keepdims=True)
+    proportions = np.divide(
+        matrix,
+        row_totals,
+        out=np.zeros_like(matrix),
+        where=row_totals != 0,
+    )
+    annotations = np.empty((2, 2), dtype=object)
+    for row in range(2):
+        for column in range(2):
+            count = matrix[row, column]
+            count_text = f"{count:.1f}" if not count.is_integer() else f"{int(count)}"
+            annotations[row, column] = (
+                f"{count_text}\n{proportions[row, column] * 100:.1f}%"
+            )
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5.5, 5.0))
+    else:
+        fig = ax.figure
+    sns.heatmap(
+        proportions,
+        annot=annotations,
+        fmt="",
+        cmap=cmap,
+        vmin=0.0,
+        vmax=1.0,
+        square=True,
+        cbar=False,
+        linewidths=1.0,
+        linecolor="white",
+        xticklabels=class_labels,
+        yticklabels=class_labels,
+        ax=ax,
+    )
+    ax.set_xlabel("Predicted class")
+    ax.set_ylabel("True class")
+    ax.set_title(title)
+    ax.tick_params(axis="y", rotation=0)
+    return fig, ax
+
+
+def plot_classification_metric_bars(
+    classification_metrics: Mapping[str, object],
+    *,
+    ax: Axes | None = None,
+    title: str = "Threshold-dependent performance",
+    color: str = "#52796F",
+) -> tuple[Figure, Axes]:
+    """Plot the main threshold-dependent metrics stored by phipml."""
+    metric_keys = (
+        "accuracy",
+        "balanced_accuracy",
+        "precision",
+        "recall",
+        "specificity",
+        "f1",
+        "mcc",
+    )
+    labels = (
+        "Accuracy",
+        "Balanced accuracy",
+        "Precision",
+        "Sensitivity",
+        "Specificity",
+        "F1",
+        "MCC",
+    )
+    missing = [key for key in metric_keys if key not in classification_metrics]
+    if missing:
+        raise KeyError(f"Classification metrics are missing: {missing}")
+    values = np.asarray(
+        [classification_metrics[key] for key in metric_keys],
+        dtype=np.float64,
+    )
+    if not np.isfinite(values).all():
+        raise ValueError("Classification metrics contain NaN or infinite values")
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6.2, 5.0))
+    else:
+        fig = ax.figure
+    positions = np.arange(len(values))
+    has_intervals = all(
+        f"{key}_ci_low" in classification_metrics
+        and f"{key}_ci_high" in classification_metrics
+        for key in metric_keys
+    )
+    xerr: np.ndarray | None = None
+    if has_intervals:
+        lower = np.asarray(
+            [classification_metrics[f"{key}_ci_low"] for key in metric_keys],
+            dtype=np.float64,
+        )
+        upper = np.asarray(
+            [classification_metrics[f"{key}_ci_high"] for key in metric_keys],
+            dtype=np.float64,
+        )
+        xerr = np.vstack([values - lower, upper - values])
+    bars = ax.barh(
+        positions,
+        values,
+        xerr=xerr,
+        capsize=3 if xerr is not None else 0,
+        color=color,
+        alpha=0.9,
+    )
+    ax.set_yticks(positions, labels)
+    ax.invert_yaxis()
+    ax.axvline(0.0, color="black", linewidth=0.8)
+    ax.set_xlim(min(-0.05, float(values.min()) - 0.08), 1.05)
+    ax.set_xlabel("Metric value")
+    threshold = classification_metrics.get("threshold")
+    if threshold is not None:
+        title = f"{title} (threshold = {float(threshold):.2f})"
+    if has_intervals:
+        title += "\n(mean and 95% empirical interval)"
+    ax.set_title(title)
+    ax.grid(axis="x", alpha=0.2)
+    for bar, value in zip(bars, values):
+        ax.text(
+            max(float(value), 0.0) + 0.02,
+            bar.get_y() + bar.get_height() / 2,
+            f"{value:.3f}",
+            va="center",
+            fontsize=9,
+        )
+    return fig, ax
+
+
+def plot_performance_summary(
+    metrics: Mapping[str, Mapping[str, object]],
+    *,
+    class_labels: Sequence[str] = ("Negative", "Positive"),
+    title: str | None = None,
+    output_path: str | Path | None = None,
+    dpi: int = 600,
+) -> tuple[Figure, np.ndarray]:
+    """Create a four-panel ROC, PR, confusion, and metric summary figure."""
+    required = {"roc", "pr", "classification"}
+    missing = sorted(required - set(metrics))
+    if missing:
+        raise KeyError(f"Performance metrics are missing sections: {missing}")
+    classification = metrics["classification"]
+    negative_support = float(classification.get("support_negative", 0.0))
+    positive_support = float(classification.get("support_positive", 0.0))
+    total_support = negative_support + positive_support
+    prevalence = positive_support / total_support if total_support else None
+
+    fig, axes = plt.subplots(2, 2, figsize=(11.5, 10.0))
+    plot_roc_metrics(metrics["roc"], ax=axes[0, 0])
+    plot_precision_recall_metrics(
+        metrics["pr"],
+        ax=axes[0, 1],
+        positive_prevalence=prevalence,
+    )
+    plot_confusion_matrix_metrics(
+        classification,
+        class_labels=class_labels,
+        ax=axes[1, 0],
+    )
+    plot_classification_metric_bars(classification, ax=axes[1, 1])
+    if title:
+        fig.suptitle(title, fontsize=15, fontweight="bold")
+    fig.tight_layout(rect=(0, 0, 1, 0.97 if title else 1))
+    _save_optional_figure(fig, output_path, dpi=dpi)
+    return fig, axes
+
+
+def plot_shap_importance_bar(
+    shap_values: pd.DataFrame | np.ndarray,
+    *,
+    feature_names: Sequence[str] | None = None,
+    max_display: int = 20,
+    ax: Axes | None = None,
+    title: str = "Global SHAP feature importance",
+    color: str = "#6D597A",
+    output_path: str | Path | None = None,
+) -> tuple[Figure, Axes]:
+    """Plot global mean absolute SHAP values for the most important features."""
+    if isinstance(shap_values, pd.DataFrame):
+        values = shap_values.to_numpy(dtype=np.float64, copy=False)
+        names = shap_values.columns.astype(str).tolist()
+    else:
+        values = np.asarray(shap_values, dtype=np.float64)
+        if feature_names is None:
+            raise ValueError("feature_names is required for an ndarray of SHAP values")
+        names = [str(name) for name in feature_names]
+    if values.ndim != 2 or values.shape[1] != len(names):
+        raise ValueError("SHAP values must be samples × features")
+    if max_display < 1:
+        raise ValueError("max_display must be at least 1")
+
+    importance = pd.Series(np.abs(values).mean(axis=0), index=names)
+    importance = importance.nlargest(min(max_display, len(importance))).sort_values()
+    if ax is None:
+        height = max(4.0, 0.32 * len(importance) + 1.5)
+        fig, ax = plt.subplots(figsize=(7.0, height))
+    else:
+        fig = ax.figure
+    ax.barh(importance.index, importance.values, color=color)
+    ax.set_xlabel("Mean absolute SHAP value")
+    ax.set_title(title)
+    ax.grid(axis="x", alpha=0.2)
+    _save_optional_figure(fig, output_path)
+    return fig, ax
+
+
+def plot_shap_heatmap(
+    shap_values: pd.DataFrame,
+    *,
+    target: pd.Series | None = None,
+    max_display: int = 20,
+    ax: Axes | None = None,
+    title: str = "Signed SHAP values across samples",
+    cmap: str = "coolwarm",
+    output_path: str | Path | None = None,
+) -> tuple[Figure, Axes]:
+    """Plot signed SHAP values for top features, optionally grouping samples."""
+    if not isinstance(shap_values, pd.DataFrame):
+        raise TypeError("shap_values must be a pandas DataFrame")
+    if shap_values.empty:
+        raise ValueError("shap_values cannot be empty")
+    if max_display < 1:
+        raise ValueError("max_display must be at least 1")
+    top_features = (
+        shap_values.abs()
+        .mean(axis=0)
+        .nlargest(min(max_display, shap_values.shape[1]))
+        .index
+    )
+    display = shap_values.loc[:, top_features]
+    if target is not None:
+        missing = display.index.difference(target.index)
+        if len(missing):
+            raise ValueError(f"Target is missing SHAP samples: {missing.tolist()[:5]}")
+        ordering = (
+            pd.DataFrame(
+                {
+                    "target": target.loc[display.index],
+                    "position": np.arange(len(display)),
+                },
+                index=display.index,
+            )
+            .sort_values(["target", "position"], kind="stable")
+            .index
+        )
+        display = display.loc[ordering]
+
+    if ax is None:
+        width = max(7.0, 0.42 * display.shape[1] + 3.0)
+        height = min(12.0, max(4.0, 0.11 * display.shape[0] + 2.0))
+        fig, ax = plt.subplots(figsize=(width, height))
+    else:
+        fig = ax.figure
+    absolute_limit = float(np.nanmax(np.abs(display.to_numpy(dtype=np.float64))))
+    if absolute_limit == 0.0:
+        absolute_limit = 1.0
+    sns.heatmap(
+        display,
+        cmap=cmap,
+        center=0.0,
+        vmin=-absolute_limit,
+        vmax=absolute_limit,
+        yticklabels=False,
+        cbar_kws={"label": "SHAP value"},
+        ax=ax,
+    )
+    ax.set_xlabel("Feature")
+    ax.set_ylabel("Samples" + (" grouped by class" if target is not None else ""))
+    ax.set_title(title)
+    ax.tick_params(axis="x", rotation=45)
+    for label in ax.get_xticklabels():
+        label.set_ha("right")
+    _save_optional_figure(fig, output_path)
+    return fig, ax
+
+
+def _feature_type(
+    name: str,
+    values: pd.Series,
+    peptide_prefixes: Sequence[str],
+) -> str:
+    if name.startswith(tuple(peptide_prefixes)):
+        return "peptide"
+    if pd.api.types.is_numeric_dtype(values):
+        observed = pd.Series(values.dropna().unique())
+        if not observed.empty and bool(observed.isin([0, 1]).all()):
+            return "binary clinical"
+        return "continuous clinical"
+    return "categorical clinical"
+
+
+def _target_masks(
+    target: pd.Series,
+    group_labels: Sequence[str],
+) -> dict[str, pd.Series]:
+    if len(group_labels) != 2:
+        raise ValueError("group_labels must contain exactly two class labels")
+    numeric = pd.to_numeric(target, errors="coerce")
+    masks: dict[str, pd.Series] = {}
+    for code, label in enumerate(group_labels):
+        direct = target.eq(label)
+        encoded = numeric.eq(code)
+        masks[str(label)] = direct | encoded
+    if any(not mask.any() for mask in masks.values()):
+        counts = target.value_counts(dropna=False).to_dict()
+        raise ValueError(
+            "Could not match both group labels to the target values; "
+            f"labels={list(group_labels)!r}, target counts={counts!r}"
+        )
+    return masks
+
+
+def build_feature_importance_table(
+    shap_values: pd.DataFrame | np.ndarray,
+    features: pd.DataFrame,
+    target: pd.Series,
+    *,
+    group_labels: Sequence[str],
+    oligos_metadata: pd.DataFrame | None = None,
+    peptide_prefixes: Sequence[str] = ("agilent_", "twist_", "corona2_"),
+    output_csv: str | Path | None = None,
+) -> pd.DataFrame:
+    """Build a SHAP table with suitable summaries for each feature type.
+
+    Peptides and binary clinical variables are summarized as prevalence (%).
+    Continuous clinical variables are summarized by their group mean. This
+    distinction is retained in ``Statistic`` so plotting code never colors an
+    Age/BMI mean as though it were prevalence.
+    """
+    if features.index.has_duplicates or features.columns.has_duplicates:
+        raise ValueError("features must have unique sample and feature labels")
+    if isinstance(shap_values, pd.DataFrame):
+        missing_rows = features.index.difference(shap_values.index)
+        missing_columns = features.columns.difference(shap_values.columns)
+        if len(missing_rows) or len(missing_columns):
+            raise ValueError(
+                "SHAP values do not cover the feature matrix; "
+                f"missing samples={missing_rows.tolist()[:5]}, "
+                f"missing features={missing_columns.tolist()[:5]}"
+            )
+        shap_frame = shap_values.loc[features.index, features.columns]
+    else:
+        values = np.asarray(shap_values, dtype=np.float64)
+        if values.shape != features.shape:
+            raise ValueError(
+                f"SHAP shape {values.shape} does not match features {features.shape}"
+            )
+        shap_frame = pd.DataFrame(
+            values, index=features.index, columns=features.columns
+        )
+
+    missing_target = features.index.difference(target.index)
+    if len(missing_target):
+        raise ValueError(f"Target is missing samples: {missing_target.tolist()[:5]}")
+    aligned_target = target.loc[features.index]
+    masks = _target_masks(aligned_target, group_labels)
+    labels = [str(label) for label in group_labels]
+
+    rows: list[dict[str, object]] = []
+    for feature in features.columns.astype(str):
+        values = features[feature]
+        kind = _feature_type(feature, values, peptide_prefixes)
+        if kind in {"peptide", "binary clinical"}:
+            statistic = "Prevalence (%)"
+            group_values = {
+                label: float(values.loc[masks[label]].mean() * 100.0)
+                for label in labels
+            }
+            difference_unit = "percentage points"
+        elif kind == "continuous clinical":
+            statistic = "Mean"
+            numeric_values = pd.to_numeric(values, errors="coerce")
+            group_values = {
+                label: float(numeric_values.loc[masks[label]].mean())
+                for label in labels
+            }
+            difference_unit = "feature units"
+        else:
+            statistic = "Not summarized"
+            group_values = {label: np.nan for label in labels}
+            difference_unit = "not applicable"
+
+        rows.append(
+            {
+                "Feature": feature,
+                "Feature type": kind,
+                "Statistic": statistic,
+                labels[0]: group_values[labels[0]],
+                labels[1]: group_values[labels[1]],
+                "Difference": group_values[labels[1]] - group_values[labels[0]],
+                "Difference unit": difference_unit,
+                "Mean |SHAP|": float(shap_frame[feature].abs().mean()),
+                "Mean SHAP": float(shap_frame[feature].mean()),
+            }
+        )
+    table = pd.DataFrame(rows).sort_values("Mean |SHAP|", ascending=False)
+
+    if oligos_metadata is not None:
+        metadata = oligos_metadata.copy()
+        metadata.index = metadata.index.astype(str)
+        metadata.index.name = "Feature"
+        table = table.merge(
+            metadata.reset_index(),
+            on="Feature",
+            how="left",
+            validate="one_to_one",
+        )
+
+    if output_csv is not None:
+        path = Path(output_csv).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        table.to_csv(path, index=False)
+    return table.reset_index(drop=True)
+
+
+def plot_feature_importance_table(
+    importance_table: pd.DataFrame,
+    *,
+    group_labels: Sequence[str],
+    max_display: int = 15,
+    description_column: str = "Description",
+    output_path: str | Path | None = None,
+) -> tuple[Figure, Axes]:
+    """Render a compact top-feature table with prevalence-only cell coloring."""
+    labels = [str(label) for label in group_labels]
+    required = {"Feature", "Feature type", "Statistic", "Mean |SHAP|", *labels}
+    missing = sorted(required - set(importance_table.columns))
+    if missing:
+        raise KeyError(f"Feature-importance table is missing columns: {missing}")
+    if max_display < 1:
+        raise ValueError("max_display must be at least 1")
+
+    display = importance_table.head(max_display).copy()
+    if description_column not in display.columns:
+        display[description_column] = ""
+    display[description_column] = display[description_column].fillna("").astype(str)
+    display[description_column] = display[description_column].map(
+        lambda value: value if len(value) <= 55 else value[:52] + "..."
+    )
+    columns = [
+        "Feature",
+        description_column,
+        "Feature type",
+        "Statistic",
+        labels[0],
+        labels[1],
+        "Mean |SHAP|",
+    ]
+    display = display.loc[:, columns]
+    for column in (*labels, "Mean |SHAP|"):
+        display[column] = pd.to_numeric(display[column], errors="coerce").round(3)
+
+    height = max(3.2, 0.42 * len(display) + 1.4)
+    fig, ax = plt.subplots(figsize=(12.5, height))
+    ax.axis("off")
+    table_artist = ax.table(
+        cellText=display.fillna("").values,
+        colLabels=display.columns,
+        cellLoc="center",
+        colWidths=[0.18, 0.34, 0.15, 0.13, 0.1, 0.1, 0.11],
+        bbox=[0, 0, 1, 1],
+    )
+    table_artist.auto_set_font_size(False)
+    table_artist.set_fontsize(8.5)
+    prevalence_rows = display["Statistic"].eq("Prevalence (%)").to_numpy()
+    group_column_indices = [display.columns.get_loc(label) for label in labels]
+    for (row, column), cell in table_artist.get_celld().items():
+        cell.set_edgecolor("white")
+        if row == 0:
+            cell.set_facecolor("#D9D9D9")
+            cell.set_text_props(weight="bold")
+            continue
+        cell.set_facecolor("#F6F6F6" if row % 2 else "white")
+        if column in group_column_indices and prevalence_rows[row - 1]:
+            raw_value = display.iloc[row - 1, column]
+            if raw_value != "" and pd.notna(raw_value):
+                cell.set_facecolor(colormaps["YlGn"](float(raw_value) / 100.0))
+        if column in (0, 1):
+            cell.set_text_props(ha="left")
+            cell.PAD = 0.02
+    ax.set_title(
+        "Top features by mean absolute SHAP value",
+        fontsize=12,
+        fontweight="bold",
+        pad=12,
+    )
+    _save_optional_figure(fig, output_path)
     return fig, ax
 
 

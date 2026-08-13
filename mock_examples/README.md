@@ -42,20 +42,6 @@ non-perfect performance, not require one exact AUC.
 - repeats the inner search on the complete cohort and saves the fitted pipeline
   for later reuse
 
-### `external_validation_noisy/`
-
-- 60-sample noisy training cohort and an independently generated 40-sample
-  noisy external cohort
-- both cohorts are balanced and have 20% signal flips
-- metadata column `cohort` selects `training` versus `external`
-- runs tuned nested CV only on the training cohort
-- tunes one full training-cohort model and evaluates it once on the untouched
-  external cohort
-- expected external ROC-AUC/PR-AUC are useful but non-perfect, approximately
-  in the `0.7-0.9` range
-
-A fixed-parameter reference run gave external ROC-AUC `0.808` and PR-AUC
-`0.714`. The runnable YAML performs Bayesian tuning, so exact values may differ.
 
 ### `external_validation_perfect/`
 

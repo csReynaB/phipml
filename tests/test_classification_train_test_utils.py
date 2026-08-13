@@ -65,6 +65,10 @@ def _settings(**updates: Any) -> ClassificationRunSettings:
         "output_dir": Path("."),
         "input_name": "input",
         "output_name": "output",
+        "classification_threshold": 0.5,
+        "bootstrap_validation": True,
+        "bootstrap_n_resamples": 1000,
+        "bootstrap_confidence_level": 0.95,
     }
     values.update(updates)
     return ClassificationRunSettings(**values)
@@ -85,9 +89,18 @@ def test_from_sources_resolves_yaml_cli_precedence_and_relative_paths(
                 {"name": "external", "filters": {"cohort": "external"}}
             ],
             "output_dir": "results",
+            "classification_threshold": 0.4,
+            "bootstrap_validation": True,
+            "bootstrap_n_resamples": 500,
+            "bootstrap_confidence_level": 0.90,
         },
     )
-    args = Namespace(seed=999, run_nested_cv=True)
+    args = Namespace(
+        seed=999,
+        run_nested_cv=True,
+        classification_threshold=0.35,
+        bootstrap_n_resamples=750,
+    )
 
     settings = ClassificationRunSettings.from_sources(config, args)
 
@@ -99,6 +112,10 @@ def test_from_sources_resolves_yaml_cli_precedence_and_relative_paths(
         ValidationSpec(filters={"cohort": "external"}, name="external"),
     )
     assert settings.output_dir == (tmp_path / "results").resolve()
+    assert settings.classification_threshold == pytest.approx(0.35)
+    assert settings.bootstrap_validation is True
+    assert settings.bootstrap_n_resamples == 750
+    assert settings.bootstrap_confidence_level == pytest.approx(0.90)
 
 
 def test_cli_validation_definitions_replace_yaml_definitions(tmp_path: Path) -> None:
@@ -129,6 +146,9 @@ def test_cli_validation_definitions_replace_yaml_definitions(tmp_path: Path) -> 
         ),
         ({"train_size": 1.0}, "train_size"),
         ({"split_only": True, "split_filters": None}, "requires split_filters"),
+        ({"classification_threshold": 1.1}, "classification_threshold"),
+        ({"bootstrap_n_resamples": 1}, "bootstrap_n_resamples"),
+        ({"bootstrap_confidence_level": 1.0}, "bootstrap_confidence_level"),
     ),
 )
 def test_from_sources_rejects_invalid_settings(

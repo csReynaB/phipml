@@ -35,7 +35,6 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
-from sklearn.utils import resample
 from skopt import BayesSearchCV
 from xgboost import XGBClassifier
 
@@ -48,6 +47,17 @@ RocMetrics = dict[str, MetricValue]
 CurveMetrics = dict[str, MetricValue]
 ClassificationMetrics = dict[str, float | int]
 DEFAULT_CLASSIFICATION_THRESHOLD = 0.5
+BOOTSTRAP_CLASSIFICATION_METRICS = (
+    "accuracy",
+    "balanced_accuracy",
+    "precision",
+    "recall",
+    "sensitivity",
+    "specificity",
+    "negative_predictive_value",
+    "f1",
+    "mcc",
+)
 
 # ======================
 # Hyper tuning
@@ -183,8 +193,11 @@ def calculate_classification_metrics(
     if not 0.0 <= threshold <= 1.0:
         raise ValueError("threshold must be between 0 and 1")
 
-    target = np.asarray(list(y_true), dtype=np.int64)
-    scores = np.asarray(list(positive_class_scores), dtype=np.float64)
+    target: NDArray[np.int64] = np.asarray(list(y_true), dtype=np.int64)
+    scores: NDArray[np.float64] = np.asarray(
+        list(positive_class_scores),
+        dtype=np.float64,
+    )
     if target.ndim != 1 or scores.ndim != 1:
         raise ValueError("y_true and positive_class_scores must be one-dimensional")
     if target.size != scores.size:
@@ -262,6 +275,71 @@ def _log_classification_metrics(
     )
 
 
+def _summarise_classification_folds(
+    fold_metrics: Sequence[ClassificationMetrics],
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Return mean and sample SD for threshold metrics across outer folds."""
+    if len(fold_metrics) < 2:
+        raise ValueError("At least two outer folds are required to summarize metrics")
+
+    means: dict[str, float] = {}
+    standard_deviations: dict[str, float] = {}
+    for metric in BOOTSTRAP_CLASSIFICATION_METRICS:
+        values = np.asarray(
+            [fold[metric] for fold in fold_metrics],
+            dtype=np.float64,
+        )
+        means[metric] = values.mean().item()
+        standard_deviations[metric] = values.std(ddof=1).item()
+    return means, standard_deviations
+
+
+def _linear_percentile_1d(
+    values: NDArray[np.float64],
+    percentile: float,
+) -> float:
+    """Return NumPy's default linear percentile for one-dimensional values.
+
+    This small typed implementation avoids the scalar-or-array return union in
+    ``numpy.percentile`` stubs, which otherwise produces false-positive IDE
+    warnings when confidence-interval bounds are indexed.
+    """
+    if values.ndim != 1 or values.size == 0:
+        raise ValueError("values must be a non-empty one-dimensional array")
+    if not 0.0 <= percentile <= 100.0:
+        raise ValueError("percentile must be between 0 and 100")
+
+    ordered: NDArray[np.float64] = np.sort(values)
+    position = (ordered.size - 1) * percentile / 100.0
+    lower_index = int(np.floor(position))
+    upper_index = int(np.ceil(position))
+    weight = position - lower_index
+    lower_value = float(ordered[lower_index])
+    upper_value = float(ordered[upper_index])
+    return lower_value + weight * (upper_value - lower_value)
+
+
+def _linear_percentile_columns(
+    values: NDArray[np.float64],
+    percentile: float,
+) -> NDArray[np.float64]:
+    """Return the linear percentile independently for every array column."""
+    if values.ndim != 2 or values.shape[0] == 0:
+        raise ValueError("values must be a non-empty two-dimensional array")
+    if not 0.0 <= percentile <= 100.0:
+        raise ValueError("percentile must be between 0 and 100")
+
+    ordered: NDArray[np.float64] = np.sort(values, axis=0)
+    position = (ordered.shape[0] - 1) * percentile / 100.0
+    lower_index = int(np.floor(position))
+    upper_index = int(np.ceil(position))
+    weight = position - lower_index
+    result = ordered[lower_index, :] + weight * (
+        ordered[upper_index, :] - ordered[lower_index, :]
+    )
+    return np.asarray(result, dtype=np.float64)
+
+
 def calculate_mean_std_ci_tpr_auc(
     auc_list: Sequence[float] | NDArray[np.float64],
     tpr_list: Sequence[Sequence[float]] | NDArray[np.float64],
@@ -299,6 +377,27 @@ def calculate_mean_std_ci_tpr_auc(
     mean_tpr: NDArray[np.float64] = tprs.mean(axis=0)
     mean_tpr[-1] = 1.0
 
+    # Aggregate AUC values.
+    auc_mean = aucs.mean().item()
+    auc_std = aucs.std(ddof=1).item()
+
+    if bootstrap:
+        curve_lower = _linear_percentile_columns(tprs, 2.5)
+        curve_upper = _linear_percentile_columns(tprs, 97.5)
+        auc_lower = _linear_percentile_1d(aucs, 2.5)
+        auc_upper = _linear_percentile_1d(aucs, 97.5)
+
+        return {
+            "boot_mean_fpr": mean_fpr_array,
+            "boot_mean_tpr": mean_tpr,
+            "boot_tprs_upper": curve_upper,
+            "boot_tprs_lower": curve_lower,
+            "boot_auc_mean": auc_mean,
+            "boot_auc_std": auc_std,
+            "boot_auc_ci_lower": auc_lower,
+            "boot_auc_ci_upper": auc_upper,
+        }
+
     std_tpr: NDArray[np.float64] = tprs.std(axis=0, ddof=1)
     tprs_lower: NDArray[np.float64] = np.maximum(
         mean_tpr - std_tpr,
@@ -309,29 +408,6 @@ def calculate_mean_std_ci_tpr_auc(
         1.0,
     )
 
-    # Aggregate AUC values.
-    auc_mean = aucs.mean().item()
-    auc_std = aucs.std(ddof=1).item()
-
-    if bootstrap:
-        percentiles: NDArray[np.float64] = np.percentile(
-            aucs,
-            [2.5, 97.5],
-        )
-        auc_ci_lower = percentiles[0].item()
-        auc_ci_upper = percentiles[1].item()
-
-        return {
-            "boot_mean_fpr": mean_fpr_array,
-            "boot_mean_tpr": mean_tpr,
-            "boot_tprs_upper": tprs_upper,
-            "boot_tprs_lower": tprs_lower,
-            "boot_auc_mean": auc_mean,
-            "boot_auc_std": auc_std,
-            "boot_auc_ci_lower": auc_ci_lower,
-            "boot_auc_ci_upper": auc_ci_upper,
-        }
-
     return {
         "fpr": mean_fpr_array,
         "tpr": mean_tpr,
@@ -340,61 +416,6 @@ def calculate_mean_std_ci_tpr_auc(
         "auc": auc_mean,
         "auc_std": auc_std,
     }
-
-
-#
-# def calculate_mean_std_ci_tpr_auc(auc_list, tpr_list, mean_fpr, bootstrap=False):
-#     """
-#     Calculate mean FPR, mean TPR, and std TPR for ROC curves.
-#     """
-#     # Aggregate TPRs
-#     tprs = np.array(tpr_list)
-#     mean_tpr = tprs.mean(axis=0)
-#     mean_tpr[-1] = 1.0  # Ensure curve ends at (1, 1)
-#
-#     std_tpr = tprs.std(axis=0, ddof=1)
-#     tprs_lower = np.maximum(mean_tpr - std_tpr, 0)
-#     tprs_upper = np.minimum(mean_tpr + std_tpr, 1)
-#
-#     # Aggregate AUCs
-#     aucs = np.array(auc_list)
-#     auc_mean = aucs.mean()
-#     auc_std = aucs.std(ddof=1)
-#
-#     if bootstrap:
-#         # se = auc_std / np.sqrt(len(aucs))
-#         auc_ci_lower = np.percentile(aucs, 2.5)
-#         auc_ci_upper = np.percentile(aucs, 97.5)
-#         roc_metrics = {
-#             "boot_mean_fpr": mean_fpr,
-#             "boot_mean_tpr": mean_tpr,
-#             #'boot_std_tpr': std_tpr,
-#             "boot_tprs_upper": tprs_upper,
-#             "boot_tprs_lower": tprs_lower,
-#             "boot_auc_mean": auc_mean,
-#             "boot_auc_std": auc_std,
-#             "boot_auc_ci_lower": auc_ci_lower,
-#             "boot_auc_ci_upper": auc_ci_upper,
-#         }
-#         return roc_metrics
-#     else:
-#         # t_value = t.ppf(0.975, len(aucs) - 1)
-#         # se = auc_std / np.sqrt(len(aucs))
-#         # auc_ci_lower = np.maximum(auc_mean - t_value * se, 0)  # 95% CI lower
-#         # auc_ci_upper = np.minimum(auc_mean + t_value * se, 1)  # 95% CI upper
-#         roc_metrics = {
-#             "fpr": mean_fpr,
-#             "tpr": mean_tpr,
-#             #'std_tpr': std_tpr,
-#             "tprs_upper": tprs_upper,
-#             "tprs_lower": tprs_lower,
-#             "auc": auc_mean,
-#             "auc_std": auc_std,
-#             #'auc_ci_lower': auc_ci_lower,
-#             #'auc_ci_upper': auc_ci_upper
-#         }
-#
-#         return roc_metrics
 
 
 def calculate_mean_std_ci_precision_ap(
@@ -459,79 +480,6 @@ def calculate_mean_std_ci_precision_ap(
         "ap": ap_mean,
         "ap_std": ap_std,
     }
-
-
-# def calculate_mean_std_ci_precision_ap(ap_list, pr_list, mean_recall):
-#     """
-#     Calculate mean recall, mean precision, and variability for PR curves.
-#     """
-#
-#     precisions = np.array(pr_list)
-#     mean_precision = precisions.mean(axis=0)
-#     mean_precision = np.clip(mean_precision, 0, 1)
-#
-#     std_precision = precisions.std(axis=0, ddof=1)
-#     prec_lower = np.maximum(mean_precision - std_precision, 0)
-#     prec_upper = np.minimum(mean_precision + std_precision, 1)
-#
-#     ap_array = np.array(ap_list)
-#     ap_mean = ap_array.mean()
-#     ap_std = ap_array.std(ddof=1)
-#
-#     pr_metrics = {
-#         "recall": mean_recall,
-#         "precision": mean_precision,
-#         "precision_upper": prec_upper,
-#         "precision_lower": prec_lower,
-#         "ap": ap_mean,
-#         "ap_std": ap_std,
-#     }
-#
-#     return pr_metrics
-
-
-def bootstrap_auc(
-    mean_fpr=None,
-    estimator=None,
-    X=None,
-    y_true=None,
-    y_pred=None,
-    n_bootstraps=200,
-    random_state=420,
-):
-    tpr_bootstraps = []
-    auc_bootstraps = []
-
-    if mean_fpr is None:
-        mean_fpr = np.linspace(0, 1, 200)  # Define default mean_fpr here
-
-    for i in range(n_bootstraps):
-        if estimator is not None and X is not None and y_true is not None:
-            X_resampled, y_resampled = resample(
-                X, y_true, stratify=y_true, random_state=random_state + i
-            )
-            y_pred_resampled = estimator.predict_proba(X_resampled)[:, 1]
-        elif y_pred is not None and y_true is not None:
-            y_resampled, y_pred_resampled = resample(
-                y_true, y_pred, stratify=y_true, random_state=random_state + i
-            )
-        else:
-            raise ValueError(
-                "Missing arguments. Estimator 'estimator', features 'X' and their true target 'y_true' must be provided for bootstrapping auc for test data."
-                "For loocv, true target 'y_true' and predictions 'y_pred' must be provided."
-            )
-
-        interp_tpr, auc_value = compute_interp_tpr_auc(
-            y_resampled, y_pred_resampled, mean_fpr
-        )
-        tpr_bootstraps.append(interp_tpr)
-        auc_bootstraps.append(auc_value)
-
-    roc_metrics = calculate_mean_std_ci_tpr_auc(
-        auc_bootstraps, tpr_bootstraps, mean_fpr, bootstrap=True
-    )
-
-    return roc_metrics
 
 
 def compute_interp_tpr_auc(y_true, y_pred_proba, mean_fpr):
@@ -599,37 +547,311 @@ def compute_interp_pr_ap(y_true, y_pred_proba, mean_recall):
     return interp_precision, ap_value
 
 
-######TEST############
+def _compute_metrics_test(
+    y_test: Iterable[int] | pd.Series,
+    y_pred: Iterable[float] | pd.Series,
+    common_grid: Sequence[float] | NDArray[np.float64],
+) -> dict[str, MetricValue]:
+    """Calculate point estimates for one external validation cohort."""
 
+    grid: NDArray[np.float64] = np.asarray(
+        common_grid,
+        dtype=np.float64,
+    )
 
-def _compute_metrics_test(y_test, y_pred, common_grid):
-    """Compute metrics for the test set."""
-    interp_tpr, auc_value = compute_interp_tpr_auc(y_test, y_pred, common_grid)
-    interp_pr, ap_value = compute_interp_pr_ap(y_test, y_pred, common_grid)
-    metrics = {
-        "fpr": common_grid,
-        "tpr": interp_tpr,
-        "auc": auc_value,
-        "recall": common_grid,
-        "precision": interp_pr,
-        "ap": ap_value,
+    interp_tpr, auc_value = compute_interp_tpr_auc(
+        y_test,
+        y_pred,
+        grid,
+    )
+    interp_precision, ap_value = compute_interp_pr_ap(
+        y_test,
+        y_pred,
+        grid,
+    )
+
+    tpr: NDArray[np.float64] = np.asarray(
+        interp_tpr,
+        dtype=np.float64,
+    )
+    precision: NDArray[np.float64] = np.asarray(
+        interp_precision,
+        dtype=np.float64,
+    )
+    auc_score: float = float(auc_value)
+    average_precision: float = float(ap_value)
+
+    metrics: dict[str, MetricValue] = {
+        "fpr": grid,
+        "tpr": tpr,
+        "auc": auc_score,
+        "recall": grid,
+        "precision": precision,
+        "ap": average_precision,
     }
-
     return metrics
 
 
-def _compute_roc_metrics_test(
-    estimator, X_test, y_test, predicted_probs_test, random_state=420
-):
-    """Compute ROC metrics for the test set."""
-    fpr, tpr, _ = roc_curve(y_test, predicted_probs_test)
+def _classification_rates_from_counts(
+    tn: int,
+    fp: int,
+    fn: int,
+    tp: int,
+) -> dict[str, float]:
+    """Calculate bootstrap-friendly classification rates from a 2x2 table."""
+    total = tn + fp + fn + tp
+    sensitivity = tp / (tp + fn) if tp + fn else 0.0
+    specificity = tn / (tn + fp) if tn + fp else 0.0
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    negative_predictive_value = tn / (tn + fn) if tn + fn else 0.0
+    f1_denominator = 2 * tp + fp + fn
+    mcc_denominator = np.sqrt(float((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn)))
+    return {
+        "accuracy": (tp + tn) / total if total else 0.0,
+        "balanced_accuracy": (sensitivity + specificity) / 2.0,
+        "precision": precision,
+        "recall": sensitivity,
+        "sensitivity": sensitivity,
+        "specificity": specificity,
+        "negative_predictive_value": negative_predictive_value,
+        "f1": (2 * tp / f1_denominator) if f1_denominator else 0.0,
+        "mcc": ((tp * tn - fp * fn) / mcc_denominator) if mcc_denominator else 0.0,
+    }
 
-    roc_metrics = bootstrap_auc(
-        estimator=estimator, X=X_test, y_true=y_test, random_state=random_state
+
+def bootstrap_classification_metrics(
+    y_true: Iterable[int] | pd.Series,
+    positive_class_scores: Iterable[float] | pd.Series,
+    *,
+    threshold: float = DEFAULT_CLASSIFICATION_THRESHOLD,
+    n_resamples: int = 1000,
+    confidence_level: float = 0.95,
+    random_state: int = 420,
+    interpolation_grid: Sequence[float] | NDArray[np.float64] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Bootstrap uncertainty for all external-validation metrics.
+
+    Samples are resampled as paired ``(target, score)`` observations within
+    each target class. The fitted model is intentionally kept fixed: this
+    estimates uncertainty caused by the finite external validation cohort,
+    not uncertainty from retraining the model.
+
+    The returned dictionary contains pointwise percentile bands for the ROC
+    and precision-recall curves, percentile confidence intervals for ROC-AUC
+    and average precision, and intervals for threshold-dependent metrics.
+    Raw bootstrap draws are not returned, keeping saved joblib files compact.
+    """
+    if n_resamples < 2:
+        raise ValueError("n_resamples must be at least 2")
+    if not 0.0 < confidence_level < 1.0:
+        raise ValueError("confidence_level must be strictly between 0 and 1")
+
+    target = np.asarray(list(y_true), dtype=np.int64)
+    scores = np.asarray(list(positive_class_scores), dtype=np.float64)
+    # This validates dimensions, finite scores, binary coding, and threshold.
+    calculate_classification_metrics(
+        target,
+        scores,
+        threshold=threshold,
     )
-    roc_metrics.update({"fpr": fpr, "tpr": tpr, "auc": auc(fpr, tpr)})
 
-    return roc_metrics
+    if interpolation_grid is None:
+        grid: NDArray[np.float64] = np.linspace(0.0, 1.0, 200)
+    else:
+        grid = np.asarray(interpolation_grid, dtype=np.float64)
+    if grid.ndim != 1 or grid.size < 2:
+        raise ValueError("interpolation_grid must be one-dimensional with >=2 points")
+    if not np.isfinite(grid).all() or (np.diff(grid) < 0).any():
+        raise ValueError("interpolation_grid must be finite and non-decreasing")
+    if grid[0] < 0.0 or grid[-1] > 1.0:
+        raise ValueError("interpolation_grid values must lie between 0 and 1")
+
+    class_positions: list[NDArray[np.intp]] = [
+        np.flatnonzero(target == class_code) for class_code in (0, 1)
+    ]
+    rng = np.random.default_rng(random_state)
+    tpr_samples: NDArray[np.float64] = np.empty(
+        (n_resamples, grid.size),
+        dtype=np.float64,
+    )
+    precision_samples: NDArray[np.float64] = np.empty(
+        (n_resamples, grid.size),
+        dtype=np.float64,
+    )
+    auc_samples: NDArray[np.float64] = np.empty(n_resamples, dtype=np.float64)
+    ap_samples: NDArray[np.float64] = np.empty(n_resamples, dtype=np.float64)
+
+    classification_samples: dict[str, NDArray[np.float64]] = {}
+
+    for metric_name in BOOTSTRAP_CLASSIFICATION_METRICS:
+        metric_key: str = metric_name
+        metric_values: NDArray[np.float64] = np.empty(
+            n_resamples,
+            dtype=np.float64,
+        )
+        classification_samples[metric_key] = metric_values
+
+    for bootstrap_index in range(n_resamples):
+        sampled_positions: NDArray[np.intp] = np.concatenate(
+            [
+                rng.choice(
+                    positions,
+                    size=positions.size,
+                    replace=True,
+                )
+                for positions in class_positions
+            ]
+        )
+        rng.shuffle(sampled_positions)
+        sampled_target = target[sampled_positions]
+        sampled_scores = scores[sampled_positions]
+
+        sampled_tpr, sampled_auc = compute_interp_tpr_auc(
+            sampled_target,
+            sampled_scores,
+            grid,
+        )
+        sampled_precision, sampled_ap = compute_interp_pr_ap(
+            sampled_target,
+            sampled_scores,
+            grid,
+        )
+        tpr_samples[bootstrap_index] = sampled_tpr
+        precision_samples[bootstrap_index] = sampled_precision
+        auc_samples[bootstrap_index] = sampled_auc
+        ap_samples[bootstrap_index] = sampled_ap
+
+        sampled_predictions = sampled_scores >= threshold
+        sampled_negative = sampled_target == 0
+        sampled_positive = ~sampled_negative
+        rates = _classification_rates_from_counts(
+            tn=int(np.count_nonzero(sampled_negative & ~sampled_predictions)),
+            fp=int(np.count_nonzero(sampled_negative & sampled_predictions)),
+            fn=int(np.count_nonzero(sampled_positive & ~sampled_predictions)),
+            tp=int(np.count_nonzero(sampled_positive & sampled_predictions)),
+        )
+        for metric, value in rates.items():
+            classification_samples[metric][bootstrap_index] = value
+
+    alpha = (1.0 - confidence_level) / 2.0
+    low_percentile = 100.0 * alpha
+    high_percentile = 100.0 * (1.0 - alpha)
+    interval_label = (
+        f"{confidence_level:.0%} stratified bootstrap interval " f"(n={n_resamples})"
+    )
+
+    tpr_lower = _linear_percentile_columns(tpr_samples, low_percentile)
+    tpr_upper = _linear_percentile_columns(tpr_samples, high_percentile)
+    auc_lower = _linear_percentile_1d(auc_samples, low_percentile)
+    auc_upper = _linear_percentile_1d(auc_samples, high_percentile)
+    precision_lower = _linear_percentile_columns(
+        precision_samples,
+        low_percentile,
+    )
+    precision_upper = _linear_percentile_columns(
+        precision_samples,
+        high_percentile,
+    )
+    ap_lower = _linear_percentile_1d(ap_samples, low_percentile)
+    ap_upper = _linear_percentile_1d(ap_samples, high_percentile)
+    classification_intervals: dict[str, Any] = {"uncertainty_label": interval_label}
+    for metric, values in classification_samples.items():
+        classification_intervals[f"{metric}_ci_lower"] = _linear_percentile_1d(
+            values,
+            low_percentile,
+        )
+        classification_intervals[f"{metric}_ci_upper"] = _linear_percentile_1d(
+            values,
+            high_percentile,
+        )
+
+    return {
+        "roc": {
+            "bootstrap_mean_tpr": tpr_samples.mean(axis=0),
+            "tprs_lower": tpr_lower,
+            "tprs_upper": tpr_upper,
+            "auc_bootstrap_mean": auc_samples.mean().item(),
+            "auc_bootstrap_std": auc_samples.std(ddof=1).item(),
+            "auc_ci_lower": auc_lower,
+            "auc_ci_upper": auc_upper,
+            "uncertainty_label": interval_label,
+        },
+        "pr": {
+            "bootstrap_mean_precision": precision_samples.mean(axis=0),
+            "precision_lower": precision_lower,
+            "precision_upper": precision_upper,
+            "ap_bootstrap_mean": ap_samples.mean().item(),
+            "ap_bootstrap_std": ap_samples.std(ddof=1).item(),
+            "ap_ci_lower": ap_lower,
+            "ap_ci_upper": ap_upper,
+            "uncertainty_label": interval_label,
+        },
+        "classification": classification_intervals,
+        "uncertainty": {
+            "method": "class-stratified paired bootstrap",
+            "resampling_unit": "external-validation samples",
+            "model_refitted": False,
+            "n_resamples": n_resamples,
+            "confidence_level": confidence_level,
+            "random_state": random_state,
+            "curve_interval": "pointwise percentile",
+        },
+    }
+
+
+#
+# def bootstrap_auc(
+#     mean_fpr: Sequence[float] | NDArray[np.float64] | None = None,
+#     estimator: Any = None,
+#     X: Any = None,
+#     y_true: Iterable[int] | pd.Series | None = None,
+#     y_pred: Iterable[float] | pd.Series | None = None,
+#     n_bootstraps: int = 200,
+#     random_state: int = 420,
+# ) -> RocMetrics:
+#     """Compatibility wrapper returning the historical ROC bootstrap keys.
+#
+#     New code should use :func:`bootstrap_classification_metrics`, which obtains
+#     ROC, PR, AP, and threshold-dependent intervals from the same resamples.
+#     """
+#     if y_true is None:
+#         raise ValueError("y_true is required for bootstrapping")
+#     if y_pred is None:
+#         if estimator is None or X is None:
+#             raise ValueError("Provide y_pred, or provide both estimator and X")
+#         y_pred = estimator.predict_proba(X)[:, 1]
+#     grid = (
+#         np.linspace(0.0, 1.0, 200)
+#         if mean_fpr is None
+#         else np.asarray(mean_fpr, dtype=np.float64)
+#     )
+#     bootstrapped = bootstrap_classification_metrics(
+#         y_true,
+#         y_pred,
+#         n_resamples=n_bootstraps,
+#         random_state=random_state,
+#         interpolation_grid=grid,
+#     )
+#     roc_metrics = bootstrapped["roc"]
+#     return {
+#         "boot_mean_fpr": grid,
+#         "boot_mean_tpr": np.asarray(
+#             roc_metrics["bootstrap_mean_tpr"],
+#             dtype=np.float64,
+#         ),
+#         "boot_tprs_lower": np.asarray(
+#             roc_metrics["tprs_lower"],
+#             dtype=np.float64,
+#         ),
+#         "boot_tprs_upper": np.asarray(
+#             roc_metrics["tprs_upper"],
+#             dtype=np.float64,
+#         ),
+#         "boot_auc_mean": float(roc_metrics["auc_bootstrap_mean"]),
+#         "boot_auc_std": float(roc_metrics["auc_bootstrap_std"]),
+#         "boot_auc_ci_lower": float(roc_metrics["auc_ci_lower"]),
+#         "boot_auc_ci_upper": float(roc_metrics["auc_ci_upper"]),
+#     }
 
 
 # ##############################
@@ -1056,6 +1278,7 @@ def nested_cv(
     peptide_prefixes: Sequence[str] | None = None,
     impute_extra_numeric: bool = False,
     extra_numeric_impute_strategy: str = "median",
+    classification_threshold: float = DEFAULT_CLASSIFICATION_THRESHOLD,
 ) -> tuple[
     list[Pipeline],
     pd.DataFrame,
@@ -1064,15 +1287,29 @@ def nested_cv(
     dict[str, dict[str, Any]],
     list[list[str]],
 ]:
-    """Run nested stratified CV and aggregate out-of-fold predictions and SHAP."""
+    """Run nested stratified CV and preserve outer-fold variability.
+
+    ROC and precision-recall curves are summarized as the outer-fold mean
+    with a pointwise ±1 sample-SD band.
+
+    Top-level classification metrics are calculated from the pooled
+    out-of-fold predictions. Per-fold classification metrics and their
+    mean and standard deviation are stored separately.
+
+    These variability summaries describe differences between outer folds;
+    they are not formal confidence intervals.
+    """
     if y_train.nunique() != 2:
         raise ValueError("Binary classification requires exactly two target classes")
+    if not 0.0 <= classification_threshold <= 1.0:
+        raise ValueError("classification_threshold must be between 0 and 1")
 
     outer_cv = StratifiedKFold(
         n_splits=n_splits,
         shuffle=True,
         random_state=random_state,
     )
+
     fold_results = Parallel(n_jobs=n_jobs)(
         delayed(nested_cv_single)(
             fit_indices,
@@ -1090,16 +1327,26 @@ def nested_cv(
             impute_extra_numeric=impute_extra_numeric,
             extra_numeric_impute_strategy=extra_numeric_impute_strategy,
         )
-        for fit_indices, validation_indices in outer_cv.split(X_train, y_train)
+        for fit_indices, validation_indices in outer_cv.split(
+            X_train,
+            y_train,
+        )
     )
 
     models: list[Pipeline] = []
     validation_folds: list[np.ndarray] = []
     selected_feature_sets: list[list[str]] = []
+
     interpolated_tprs: list[np.ndarray] = []
     auc_values: list[float] = []
+
     interpolated_precisions: list[np.ndarray] = []
     average_precisions: list[float] = []
+
+    # Keep the narrowly typed metrics separate from the richer records
+    # containing fold identifiers and sample counts.
+    fold_classification_metrics: list[ClassificationMetrics] = []
+    fold_classification_records: list[dict[str, Any]] = []
 
     scores = pd.Series(
         np.nan,
@@ -1107,13 +1354,14 @@ def nested_cv(
         name="Score",
         dtype=float,
     )
+
     shap_values = pd.DataFrame(
         0.0,
         index=X_train.index,
         columns=X_train.columns,
     )
 
-    for (
+    for fold_number, (
         validation_indices,
         fold_scores,
         fold_shap,
@@ -1123,26 +1371,52 @@ def nested_cv(
         interpolated_precision,
         average_precision,
         selected_features,
-    ) in fold_results:
+    ) in enumerate(fold_results, start=1):
         models.append(model)
         validation_folds.append(validation_indices)
         selected_feature_sets.append(selected_features)
-        scores.iloc[validation_indices] = fold_scores
-        shap_values.loc[fold_shap.index, fold_shap.columns] = fold_shap
-        interpolated_tprs.append(interpolated_tpr)
-        auc_values.append(auc_value)
-        interpolated_precisions.append(interpolated_precision)
-        average_precisions.append(average_precision)
 
-    if scores.isna().any():
-        missing_samples = scores.index[scores.isna()].tolist()[:10]
+        scores.iloc[validation_indices] = fold_scores
+
+        shap_values.loc[
+            fold_shap.index,
+            fold_shap.columns,
+        ] = fold_shap
+
+        interpolated_tprs.append(interpolated_tpr)
+        auc_values.append(float(auc_value))
+
+        interpolated_precisions.append(interpolated_precision)
+        average_precisions.append(float(average_precision))
+
+        fold_metrics = calculate_classification_metrics(
+            y_train.iloc[validation_indices],
+            fold_scores,
+            threshold=classification_threshold,
+        )
+        fold_classification_metrics.append(fold_metrics)
+
+        fold_record: dict[str, Any] = {
+            **fold_metrics,
+            "fold": fold_number,
+            "n_samples": len(validation_indices),
+        }
+        fold_classification_records.append(fold_record)
+
+    # Every training sample should receive exactly one outer-fold
+    # validation prediction.
+    missing_mask = scores.isna()
+    if missing_mask.any():
+        missing_count = int(np.count_nonzero(missing_mask.to_numpy()))
+        missing_samples = scores.index[missing_mask].tolist()[:10]
+
         raise RuntimeError(
             "Nested CV did not produce valid out-of-fold scores for "
-            f"{len(missing_samples)} samples. First missing samples: "
-            f"{missing_samples[:10]}"
+            f"{missing_count} samples. First missing samples: "
+            f"{missing_samples}"
         )
 
-    interpolation_grid = np.linspace(0, 1, 200)
+    interpolation_grid = np.linspace(0.0, 1.0, 200)
 
     roc_metrics = calculate_mean_std_ci_tpr_auc(
         auc_values,
@@ -1156,22 +1430,92 @@ def nested_cv(
         interpolation_grid,
     )
 
-    classification_metrics: ClassificationMetrics = calculate_classification_metrics(
-        y_train,
-        scores,
-    )
+    uncertainty_label = f"Outer-fold ±1 SD (n={len(fold_results)})"
 
-    metrics: dict[str, dict[str, Any]] = {
-        "roc": roc_metrics,
-        "pr": pr_metrics,
-        "classification": classification_metrics,
+    # These summary dictionaries intentionally contain heterogeneous
+    # values: arrays, scalars, lists, integers, and explanatory strings.
+    roc_summary: dict[str, Any] = {
+        **roc_metrics,
+        "auc_folds": [float(value) for value in auc_values],
+        "n_outer_folds": len(fold_results),
+        "summary_scope": "mean across outer validation folds",
+        "uncertainty_label": uncertainty_label,
     }
 
-    logger.info("Mean ROC-AUC across folds: %.3f", metrics["roc"]["auc"])
-    logger.info("Mean Average Precision (AP) across folds: %.3f", metrics["pr"]["ap"])
+    positive_count = int(np.count_nonzero(y_train.to_numpy() == 1))
+    positive_prevalence = positive_count / len(y_train)
+
+    pr_summary: dict[str, Any] = {
+        **pr_metrics,
+        "ap_folds": [float(value) for value in average_precisions],
+        "n_outer_folds": len(fold_results),
+        "positive_prevalence": positive_prevalence,
+        "summary_scope": "mean across outer validation folds",
+        "uncertainty_label": uncertainty_label,
+    }
+
+    # These are calculated from all pooled out-of-fold predictions.
+    pooled_classification = calculate_classification_metrics(
+        y_train,
+        scores,
+        threshold=classification_threshold,
+    )
+
+    fold_mean, fold_std = _summarise_classification_folds(fold_classification_metrics)
+
+    classification_metrics: dict[str, Any] = {
+        **pooled_classification,
+        "fold_metrics": fold_classification_records,
+        "fold_mean": fold_mean,
+        "fold_std": fold_std,
+        "n_outer_folds": len(fold_results),
+        "summary_scope": "pooled out-of-fold predictions",
+        "threshold_source": ("pre-specified before outer-CV evaluation"),
+        "threshold_selected_on_evaluation_data": False,
+        "uncertainty_label": ("Outer-fold variability stored as fold_mean/fold_std"),
+    }
+
+    metrics: dict[str, dict[str, Any]] = {
+        "roc": roc_summary,
+        "pr": pr_summary,
+        "classification": classification_metrics,
+        "uncertainty": {
+            "method": "outer-fold variability",
+            "n_outer_folds": len(fold_results),
+            "model_refitted_per_fold": True,
+            "inner_hyperparameter_tuning": param_grid is not None,
+            "curve_interval": "pointwise mean ±1 sample SD",
+            "formal_confidence_interval": False,
+        },
+    }
+
+    logger.info(
+        "Mean ROC-AUC across folds: %.3f ± %.3f",
+        roc_summary["auc"],
+        roc_summary["auc_std"],
+    )
+    logger.info(
+        "Mean Average Precision (AP) across folds: %.3f ± %.3f",
+        pr_summary["ap"],
+        pr_summary["ap_std"],
+    )
+
     _log_classification_metrics(
         "Out-of-fold classification metrics",
-        metrics["classification"],
+        pooled_classification,
+    )
+
+    logger.info(
+        "Outer-fold classification variability: "
+        "accuracy=%.3f ± %.3f, "
+        "F1=%.3f ± %.3f, "
+        "MCC=%.3f ± %.3f",
+        fold_mean["accuracy"],
+        fold_std["accuracy"],
+        fold_mean["f1"],
+        fold_std["f1"],
+        fold_mean["mcc"],
+        fold_std["mcc"],
     )
 
     return (
@@ -1320,8 +1664,17 @@ def train_and_validate_model(
     impute_extra_numeric: bool = False,
     extra_numeric_impute_strategy: str = "median",
     return_feature_report: bool = False,
+    classification_threshold: float = DEFAULT_CLASSIFICATION_THRESHOLD,
+    bootstrap_validation: bool = True,
+    bootstrap_n_resamples: int = 1000,
+    bootstrap_confidence_level: float = 0.95,
 ) -> Pipeline | ValidationResult | ValidationResultWithReport:
-    """Fit the full training cohort or evaluate a fitted model externally."""
+    """Fit the full training cohort or evaluate a fitted model externally.
+
+    External validation uses one fixed fitted model. By default, paired target
+    and score observations are resampled within each class to save uncertainty
+    for ROC, PR, AUC, AP, and threshold-dependent classification metrics.
+    """
     if best_estimator is None:
         best_estimator = _build_and_fit_pipeline(
             pipeline,
@@ -1366,10 +1719,16 @@ def train_and_validate_model(
         index=aligned_test.index,
         name="Score",
     )
+    interpolation_grid = np.linspace(0.0, 1.0, 200)
     flat_metrics = _compute_metrics_test(
         y_test,
         scores_array,
-        np.linspace(0, 1, 200),
+        interpolation_grid,
+    )
+    classification_metrics = calculate_classification_metrics(
+        y_test,
+        scores_array,
+        threshold=classification_threshold,
     )
 
     metrics: dict[str, dict[str, Any]] = {
@@ -1382,12 +1741,29 @@ def train_and_validate_model(
             "recall": flat_metrics["recall"],
             "precision": flat_metrics["precision"],
             "ap": flat_metrics["ap"],
+            "positive_prevalence": float(y_test.mean()),
         },
-        "classification": calculate_classification_metrics(
+        "classification": dict(classification_metrics),
+    }
+    metrics["classification"].update(
+        {
+            "threshold_source": "pre-specified before external validation",
+            "threshold_selected_on_evaluation_data": False,
+        }
+    )
+    if bootstrap_validation:
+        bootstrap_metrics = bootstrap_classification_metrics(
             y_test,
             scores_array,
-        ),
-    }
+            threshold=classification_threshold,
+            n_resamples=bootstrap_n_resamples,
+            confidence_level=bootstrap_confidence_level,
+            random_state=random_state,
+            interpolation_grid=interpolation_grid,
+        )
+        for section in ("roc", "pr", "classification"):
+            metrics[section].update(bootstrap_metrics[section])
+        metrics["uncertainty"] = bootstrap_metrics["uncertainty"]
 
     selected_shap, selected_features = _compute_shap_frame(
         best_estimator,
@@ -1403,11 +1779,31 @@ def train_and_validate_model(
         selected_shap.columns,
     ] = selected_shap
 
-    logger.info("ROC-AUC in validation set: %.3f", metrics["roc"]["auc"])
-    logger.info("Average Precision (AP) in validation set: %.3f", metrics["pr"]["ap"])
+    if bootstrap_validation:
+        logger.info(
+            "ROC-AUC in validation set: %.3f (%.0f%% bootstrap CI %.3f-%.3f)",
+            metrics["roc"]["auc"],
+            100.0 * bootstrap_confidence_level,
+            metrics["roc"]["auc_ci_lower"],
+            metrics["roc"]["auc_ci_upper"],
+        )
+        logger.info(
+            "Average Precision (AP) in validation set: %.3f "
+            "(%.0f%% bootstrap CI %.3f-%.3f)",
+            metrics["pr"]["ap"],
+            100.0 * bootstrap_confidence_level,
+            metrics["pr"]["ap_ci_lower"],
+            metrics["pr"]["ap_ci_upper"],
+        )
+    else:
+        logger.info("ROC-AUC in validation set: %.3f", metrics["roc"]["auc"])
+        logger.info(
+            "Average Precision (AP) in validation set: %.3f",
+            metrics["pr"]["ap"],
+        )
     _log_classification_metrics(
         "Validation classification metrics",
-        metrics["classification"],
+        classification_metrics,
     )
 
     result: ValidationResult = (

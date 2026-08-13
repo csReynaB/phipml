@@ -28,6 +28,7 @@ BOOLEAN_OPTIONS = {
     "--impute-extra-numeric": "impute_extra_numeric",
     "--fill-missing-peptides-with-zero": "fill_missing_peptides_with_zero",
     "--split-only": "split_only",
+    "--bootstrap-validation": "bootstrap_validation",
 }
 
 
@@ -69,6 +70,10 @@ def _settings(tmp_path: Path, **updates: Any) -> Any:
         "output_dir": tmp_path / "results",
         "input_name": "comparison",
         "output_name": "comparison",
+        "classification_threshold": 0.35,
+        "bootstrap_validation": True,
+        "bootstrap_n_resamples": 250,
+        "bootstrap_confidence_level": 0.90,
     }
     values.update(updates)
     return SimpleNamespace(**values)
@@ -237,18 +242,20 @@ def test_main_runs_nested_cv_trains_saves_and_validates(
         "roc": {"auc": 0.75},
         "pr": {"ap": 0.70},
     }
-    monkeypatch.setattr(
-        cli,
-        "nested_cv",
-        lambda *args, **kwargs: (
+    captured: dict[str, dict[str, Any]] = {}
+
+    def fake_nested_cv(*args: Any, **kwargs: Any) -> Any:
+        captured["nested"] = kwargs
+        return (
             [pipeline],
             pd.DataFrame(0.0, index=X_train.index, columns=X_train.columns),
             pd.Series([0.1, 0.9, 0.2, 0.8], index=X_train.index),
             [np.array([0, 1]), np.array([2, 3])],
             metrics,
             [["agilent_p1"], ["agilent_p1"]],
-        ),
-    )
+        )
+
+    monkeypatch.setattr(cli, "nested_cv", fake_nested_cv)
     monkeypatch.setattr(
         cli,
         "_load_validation_cohort",
@@ -258,6 +265,7 @@ def test_main_runs_nested_cv_trains_saves_and_validates(
     def fake_train_validate(*args: Any, **kwargs: Any) -> Any:
         if kwargs.get("get_only_model"):
             return pipeline
+        captured["validation"] = kwargs
         return (
             pipeline,
             pd.DataFrame(0.0, index=X_test.index, columns=X_test.columns),
@@ -287,6 +295,11 @@ def test_main_runs_nested_cv_trains_saves_and_validates(
     assert "metrics_train" in joblib.load(nested_path)
     assert "best_estimator" in joblib.load(training_path)
     assert "metrics_test" in joblib.load(validation_path)
+    assert captured["nested"]["classification_threshold"] == pytest.approx(0.35)
+    assert captured["validation"]["classification_threshold"] == pytest.approx(0.35)
+    assert captured["validation"]["bootstrap_validation"] is True
+    assert captured["validation"]["bootstrap_n_resamples"] == 250
+    assert captured["validation"]["bootstrap_confidence_level"] == pytest.approx(0.90)
 
 
 def test_main_only_train_model_saves_model_and_skips_validation(

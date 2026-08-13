@@ -18,10 +18,10 @@ import yaml
 from sklearn.pipeline import Pipeline
 from skopt.space import Integer, Real
 
-from phipml.classification.helpers import (
+from phipml.classification.helpers import (  # bootstrap_auc,
+    BOOTSTRAP_CLASSIFICATION_METRICS,
     _build_and_fit_pipeline,
     _compute_shap_frame,
-    bootstrap_auc,
     build_pipeline,
     nested_cv,
     train_and_validate_model,
@@ -255,6 +255,8 @@ def test_real_nested_cv_fits_models_calculates_metrics_and_shap() -> None:
         )
     assert -1.0 <= float(classification["mcc"]) <= 1.0
     assert classification["threshold"] == pytest.approx(0.5)
+    assert classification["threshold_selected_on_evaluation_data"] is False
+    assert "pre-specified" in classification["threshold_source"]
     confusion_count = sum(
         int(classification[key])
         for key in (
@@ -269,6 +271,36 @@ def test_real_nested_cv_fits_models_calculates_metrics_and_shap() -> None:
     assert np.asarray(roc["tpr"]).shape == (200,)
     assert np.asarray(pr["recall"]).shape == (200,)
     assert np.asarray(pr["precision"]).shape == (200,)
+
+    # Preserve the outer-fold distribution rather than treating the SD band
+    # as a formal confidence interval.
+    assert len(roc["auc_folds"]) == 3
+    assert len(pr["ap_folds"]) == 3
+    assert float(np.mean(roc["auc_folds"])) == pytest.approx(float(roc["auc"]))
+    assert float(np.mean(pr["ap_folds"])) == pytest.approx(float(pr["ap"]))
+    assert roc["n_outer_folds"] == pr["n_outer_folds"] == 3
+    assert "Outer-fold ±1 SD" in roc["uncertainty_label"]
+    assert "Outer-fold ±1 SD" in pr["uncertainty_label"]
+
+    fold_metrics = classification["fold_metrics"]
+    assert len(fold_metrics) == 3
+    assert [fold["fold"] for fold in fold_metrics] == [1, 2, 3]
+    assert sum(int(fold["n_samples"]) for fold in fold_metrics) == len(X)
+    assert all(
+        int(fold["support_negative"]) + int(fold["support_positive"])
+        == int(fold["n_samples"])
+        for fold in fold_metrics
+    )
+    for metric_name in BOOTSTRAP_CLASSIFICATION_METRICS:
+        assert metric_name in classification["fold_mean"]
+        assert metric_name in classification["fold_std"]
+        assert float(classification["fold_std"][metric_name]) >= 0.0
+
+    uncertainty = metrics["uncertainty"]
+    assert uncertainty["method"] == "outer-fold variability"
+    assert uncertainty["n_outer_folds"] == 3
+    assert uncertainty["model_refitted_per_fold"] is True
+    assert uncertainty["formal_confidence_interval"] is False
 
     # The synthetic signal is intentionally strong; this also detects an
     # accidental target/probability inversion.
@@ -500,6 +532,7 @@ def test_real_perfect_external_validation_without_tuning() -> None:
     _assert_probability_metric(metrics["pr"]["ap"], "external PR-AUC")
     assert float(metrics["roc"]["auc"]) == pytest.approx(1.0)
     assert float(metrics["pr"]["ap"]) == pytest.approx(1.0)
+    assert metrics["classification"]["threshold_selected_on_evaluation_data"] is False
 
 
 def test_real_noisy_external_validation_without_tuning() -> None:
@@ -626,39 +659,39 @@ def test_real_noisy_external_validation_with_joint_tuning() -> None:
     assert 0.60 <= pr_auc < 0.98
 
 
-def test_real_bootstrap_auc_returns_finite_uncertainty() -> None:
-    """Exercise the estimator-based bootstrap path with real predictions."""
-    X, y = _synthetic_classification_data(
-        30,
-        seed=5,
-        sample_prefix="BOOT",
-    )
-    fitted = _small_random_forest_pipeline(X).fit(X, y)
-    grid = np.linspace(0.0, 1.0, 25)
-
-    metrics = bootstrap_auc(
-        mean_fpr=grid,
-        estimator=fitted,
-        X=X,
-        y_true=y,
-        n_bootstraps=20,
-        random_state=17,
-    )
-
-    assert np.asarray(metrics["boot_mean_fpr"]).shape == grid.shape
-    assert np.asarray(metrics["boot_mean_tpr"]).shape == grid.shape
-    for key in (
-        "boot_auc_mean",
-        "boot_auc_std",
-        "boot_auc_ci_lower",
-        "boot_auc_ci_upper",
-    ):
-        assert np.isfinite(float(metrics[key]))
-    _assert_probability_metric(metrics["boot_auc_mean"], "bootstrap mean AUC")
-    _assert_probability_metric(metrics["boot_auc_ci_lower"], "bootstrap lower CI")
-    _assert_probability_metric(metrics["boot_auc_ci_upper"], "bootstrap upper CI")
-    assert float(metrics["boot_auc_std"]) >= 0.0
-    assert float(metrics["boot_auc_ci_lower"]) <= float(metrics["boot_auc_ci_upper"])
+# def test_real_bootstrap_auc_returns_finite_uncertainty() -> None:
+#     """Exercise the estimator-based bootstrap path with real predictions."""
+#     X, y = _synthetic_classification_data(
+#         30,
+#         seed=5,
+#         sample_prefix="BOOT",
+#     )
+#     fitted = _small_random_forest_pipeline(X).fit(X, y)
+#     grid = np.linspace(0.0, 1.0, 25)
+#
+#     metrics = bootstrap_auc(
+#         mean_fpr=grid,
+#         estimator=fitted,
+#         X=X,
+#         y_true=y,
+#         n_bootstraps=20,
+#         random_state=17,
+#     )
+#
+#     assert np.asarray(metrics["boot_mean_fpr"]).shape == grid.shape
+#     assert np.asarray(metrics["boot_mean_tpr"]).shape == grid.shape
+#     for key in (
+#         "boot_auc_mean",
+#         "boot_auc_std",
+#         "boot_auc_ci_lower",
+#         "boot_auc_ci_upper",
+#     ):
+#         assert np.isfinite(float(metrics[key]))
+#     _assert_probability_metric(metrics["boot_auc_mean"], "bootstrap mean AUC")
+#     _assert_probability_metric(metrics["boot_auc_ci_lower"], "bootstrap lower CI")
+#     _assert_probability_metric(metrics["boot_auc_ci_upper"], "bootstrap upper CI")
+#     assert float(metrics["boot_auc_std"]) >= 0.0
+#     assert float(metrics["boot_auc_ci_lower"]) <= float(metrics["boot_auc_ci_upper"])
 
 
 def test_real_cli_yaml_to_saved_training_model(tmp_path: Path) -> None:

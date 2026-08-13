@@ -85,6 +85,11 @@ class ClassificationRunSettings:
     input_name: str
     output_name: str
 
+    classification_threshold: float
+    bootstrap_validation: bool
+    bootstrap_n_resamples: int
+    bootstrap_confidence_level: float
+
     @classmethod
     def from_sources(
         cls,
@@ -213,6 +218,15 @@ class ClassificationRunSettings:
             output_dir=resolve_path(choose("output_dir", ".")),
             input_name=str(choose("input_name", "input_name")),
             output_name=str(choose("output_name", "out_name")),
+            classification_threshold=float(choose("classification_threshold", 0.5)),
+            bootstrap_validation=cls._as_bool(
+                choose("bootstrap_validation", True),
+                "bootstrap_validation",
+            ),
+            bootstrap_n_resamples=int(choose("bootstrap_n_resamples", 1000)),
+            bootstrap_confidence_level=float(
+                choose("bootstrap_confidence_level", 0.95)
+            ),
         )
         settings.validate()
         return settings
@@ -305,6 +319,14 @@ class ClassificationRunSettings:
             logger.warning(
                 "Both outer and inner CV parallelism are enabled; this can "
                 "oversubscribe CPUs and memory."
+            )
+        if not 0.0 <= self.classification_threshold <= 1.0:
+            raise ValueError("classification_threshold must be between 0 and 1")
+        if self.bootstrap_n_resamples < 2:
+            raise ValueError("bootstrap_n_resamples must be at least 2")
+        if not 0.0 < self.bootstrap_confidence_level < 1.0:
+            raise ValueError(
+                "bootstrap_confidence_level must be strictly between 0 and 1"
             )
 
 

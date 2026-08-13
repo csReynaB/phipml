@@ -187,6 +187,34 @@ def parse_args_classification(
     parser.add_argument("--param-grid-name", default=None)
 
     parser.add_argument(
+        "--classification-threshold",
+        type=float,
+        default=None,
+        help=(
+            "Pre-specified training decision threshold for accuracy, F1, "
+            "sensitivity, specificity, and related metrics"
+        ),
+    )
+    parser.add_argument(
+        "--bootstrap-validation",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Calculate stratified-bootstrap uncertainty for external validation",
+    )
+    parser.add_argument(
+        "--bootstrap-n-resamples",
+        type=int,
+        default=None,
+        help="Number of external-validation bootstrap resamples",
+    )
+    parser.add_argument(
+        "--bootstrap-confidence-level",
+        type=float,
+        default=None,
+        help="Confidence level for external-validation bootstrap intervals",
+    )
+
+    parser.add_argument(
         "--impute-extra-numeric",
         dest="impute_extra_numeric",
         action=argparse.BooleanOptionalAction,
@@ -482,6 +510,7 @@ def main(argv: list[str] | None = None) -> int:
             peptide_prefixes=config.peptide_prefixes,
             impute_extra_numeric=settings.impute_extra_numeric,
             extra_numeric_impute_strategy=settings.extra_numeric_impute_strategy,
+            classification_threshold=settings.classification_threshold,
         )
         (
             models,
@@ -597,6 +626,10 @@ def main(argv: list[str] | None = None) -> int:
             peptide_prefixes=config.peptide_prefixes,
             fill_missing_peptides_with_zero=settings.fill_missing_peptides_with_zero,
             return_feature_report=True,
+            classification_threshold=settings.classification_threshold,
+            bootstrap_validation=settings.bootstrap_validation,
+            bootstrap_n_resamples=settings.bootstrap_n_resamples,
+            bootstrap_confidence_level=settings.bootstrap_confidence_level,
         )
         if not isinstance(validation_result, tuple):
             raise RuntimeError(f"Validation {validation.name!r} returned no result")

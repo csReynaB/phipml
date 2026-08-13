@@ -105,6 +105,43 @@ def test_interpolated_roc_and_pr_have_expected_shapes() -> None:
     assert average_precision == pytest.approx(1.0)
 
 
+def test_bootstrap_classification_metrics_is_complete_and_reproducible() -> None:
+    y = pd.Series([0, 0, 0, 0, 1, 1, 1, 1])
+    scores = pd.Series([0.05, 0.20, 0.45, 0.70, 0.30, 0.60, 0.80, 0.95])
+    grid = np.linspace(0.0, 1.0, 25)
+
+    first = helpers.bootstrap_classification_metrics(
+        y,
+        scores,
+        n_resamples=50,
+        random_state=17,
+        interpolation_grid=grid,
+    )
+    second = helpers.bootstrap_classification_metrics(
+        y,
+        scores,
+        n_resamples=50,
+        random_state=17,
+        interpolation_grid=grid,
+    )
+
+    assert set(first) == {"roc", "pr", "classification", "uncertainty"}
+    assert first["uncertainty"]["model_refitted"] is False
+    assert first["uncertainty"]["n_resamples"] == 50
+    np.testing.assert_allclose(first["roc"]["tprs_lower"], second["roc"]["tprs_lower"])
+    np.testing.assert_allclose(
+        first["pr"]["precision_upper"],
+        second["pr"]["precision_upper"],
+    )
+    assert first["roc"]["auc_ci_lower"] <= first["roc"]["auc_ci_upper"]
+    assert first["pr"]["ap_ci_lower"] <= first["pr"]["ap_ci_upper"]
+    for metric in helpers.BOOTSTRAP_CLASSIFICATION_METRICS:
+        assert (
+            first["classification"][f"{metric}_ci_lower"]
+            <= first["classification"][f"{metric}_ci_upper"]
+        )
+
+
 def test_classification_metrics_use_the_recorded_threshold() -> None:
     metrics = helpers.calculate_classification_metrics(
         [0, 0, 1, 1],
@@ -349,6 +386,7 @@ def test_train_and_validate_model_returns_metrics_shap_and_report(
         y_test=y_test,
         best_estimator=fitted,
         return_feature_report=True,
+        bootstrap_n_resamples=50,
     )
 
     assert isinstance(result, tuple)
@@ -356,9 +394,11 @@ def test_train_and_validate_model_returns_metrics_shap_and_report(
     assert model is fitted
     assert shap_values.shape == X_test.shape
     assert scores.index.tolist() == X_test.index.tolist()
-    assert set(metrics) == {"roc", "pr", "classification"}
+    assert set(metrics) == {"roc", "pr", "classification", "uncertainty"}
     assert 0.0 <= metrics["roc"]["auc"] <= 1.0
+    assert metrics["roc"]["auc_ci_lower"] <= metrics["roc"]["auc_ci_upper"]
     assert 0.0 <= metrics["pr"]["ap"] <= 1.0
+    assert metrics["pr"]["ap_ci_lower"] <= metrics["pr"]["ap_ci_upper"]
     assert metrics["classification"]["threshold"] == pytest.approx(0.5)
     assert 0.0 <= metrics["classification"]["accuracy"] <= 1.0
     assert 0.0 <= metrics["classification"]["f1"] <= 1.0

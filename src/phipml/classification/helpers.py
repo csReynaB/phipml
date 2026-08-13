@@ -1470,9 +1470,9 @@ def nested_cv(
         "fold_std": fold_std,
         "n_outer_folds": len(fold_results),
         "summary_scope": "pooled out-of-fold predictions",
-        "threshold_source": ("pre-specified before outer-CV evaluation"),
+        "threshold_source": "pre-specified before outer-CV evaluation",
         "threshold_selected_on_evaluation_data": False,
-        "uncertainty_label": ("Outer-fold variability stored as fold_mean/fold_std"),
+        "uncertainty_label": "Outer-fold variability stored as fold_mean/fold_std",
     }
 
     metrics: dict[str, dict[str, Any]] = {

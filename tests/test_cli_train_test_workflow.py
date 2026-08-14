@@ -220,6 +220,11 @@ def test_main_runs_nested_cv_trains_saves_and_validates(
     )
     monkeypatch.setattr(cli, "Config", lambda path: config)
     monkeypatch.setattr(
+        cli,
+        "_data_context",
+        lambda *args, **kwargs: {"schema_version": 1},
+    )
+    monkeypatch.setattr(
         cli.ClassificationRunSettings,
         "from_sources",
         lambda config, args: settings,
@@ -292,9 +297,18 @@ def test_main_runs_nested_cv_trains_saves_and_validates(
     assert nested_path.is_file()
     assert training_path.is_file()
     assert validation_path.is_file()
-    assert "metrics_train" in joblib.load(nested_path)
-    assert "best_estimator" in joblib.load(training_path)
-    assert "metrics_test" in joblib.load(validation_path)
+    nested_saved = joblib.load(nested_path)
+    training_saved = joblib.load(training_path)
+    validation_saved = joblib.load(validation_path)
+    assert "metrics_train" in nested_saved
+    assert "target_train" in nested_saved
+    assert "data_context" in nested_saved
+    assert "best_estimator" in training_saved
+    assert "target_train" in training_saved
+    assert "data_context" in training_saved
+    assert "metrics_test" in validation_saved
+    assert "target_test" in validation_saved
+    assert "data_context" in validation_saved
     assert captured["nested"]["classification_threshold"] == pytest.approx(0.35)
     assert captured["validation"]["classification_threshold"] == pytest.approx(0.35)
     assert captured["validation"]["bootstrap_validation"] is True
@@ -324,6 +338,11 @@ def test_main_only_train_model_saves_model_and_skips_validation(
         lambda argv: SimpleNamespace(config="unused.yaml"),
     )
     monkeypatch.setattr(cli, "Config", lambda path: config)
+    monkeypatch.setattr(
+        cli,
+        "_data_context",
+        lambda *args, **kwargs: {"schema_version": 1},
+    )
     monkeypatch.setattr(
         cli.ClassificationRunSettings,
         "from_sources",

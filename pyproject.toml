@@ -64,6 +64,8 @@ dev = [
 # ---------------------------------------------------------------------
 [project.scripts]
 phipml = "phipml.cli.train_test:main"
+phipml-plot = "phipml.cli.plot_results:main"
+phipml-heatmap = "phipml.cli.metric_heatmap:main"
 
 # ---------------------------------------------------------------------
 # Black — formatter

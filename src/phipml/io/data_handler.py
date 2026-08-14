@@ -130,6 +130,41 @@ class Config:
 
         values = dict(raw)
         values.update({k: v for k, v in overrides.items() if v is not None})
+        self._initialise_from_mapping(values, config_file=path)
+
+    @classmethod
+    def from_mapping(
+        cls,
+        values: Mapping[str, Any],
+        *,
+        config_file: str | Path | None = None,
+    ) -> "Config":
+        """Create a validated configuration from an embedded artifact snapshot.
+
+        Input paths in snapshots produced by :meth:`to_mapping` are absolute,
+        so reconstruction is independent of the plotting process's working
+        directory. ``config_file`` is retained only as provenance and as the
+        base directory for any deliberately relative values in a hand-written
+        mapping.
+        """
+        if not isinstance(values, Mapping):
+            raise TypeError("Configuration snapshot must be a mapping")
+        source = (
+            Path(config_file).expanduser().resolve()
+            if config_file is not None
+            else (Path.cwd() / "embedded_phipml_config.yaml").resolve()
+        )
+        instance = cls.__new__(cls)
+        instance._initialise_from_mapping(dict(values), config_file=source)
+        return instance
+
+    def _initialise_from_mapping(
+        self,
+        values: dict[str, Any],
+        *,
+        config_file: Path,
+    ) -> None:
+        """Populate and validate fields shared by file and snapshot loading."""
         for old, new in self._ALIASES.items():
             if old in values and new not in values:
                 values[new] = values[old]
@@ -147,12 +182,36 @@ class Config:
             elif f.default_factory is not MISSING:
                 setattr(self, f.name, f.default_factory())
 
-        self.config_file = path
-        self._normalise_paths(path.parent)
+        self.config_file = config_file
+        self._normalise_paths(config_file.parent)
         self._normalise_prefixes()
         self._normalise_sample_file_settings()
         self._validate()
         self._update_group_metadata()
+
+    def to_mapping(self) -> dict[str, Any]:
+        """Return a portable plain mapping with resolved input paths.
+
+        The mapping intentionally excludes derived attributes and Python class
+        instances. It is compact, joblib/YAML friendly, and stable enough for
+        result provenance and later plot-data reconstruction.
+        """
+
+        def plain(value: Any) -> Any:
+            if isinstance(value, Path):
+                return str(value.expanduser().resolve())
+            if isinstance(value, Mapping):
+                return {str(key): plain(item) for key, item in value.items()}
+            if isinstance(value, tuple):
+                return [plain(item) for item in value]
+            if isinstance(value, list):
+                return [plain(item) for item in value]
+            return value
+
+        return {
+            config_field.name: plain(getattr(self, config_field.name))
+            for config_field in fields(type(self))
+        }
 
     def _update_group_metadata(self) -> None:
         """Rebuild values derived from the configured target-group order."""

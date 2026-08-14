@@ -399,10 +399,13 @@ validation_<model>_<validation-name>_<seed>.joblib
 The main saved objects are:
 
 - **Nested CV:** fold models, out-of-fold scores, ROC/PR and classification
-  metrics, SHAP values, validation indices, and selected features.
-- **Training:** the fitted full-cohort scikit-learn pipeline.
+  metrics, SHAP values, validation indices, fold-specific selected features,
+  encoded targets, and compact resolved input provenance.
+- **Training:** the fitted full-cohort scikit-learn pipeline, training targets,
+  raw feature names, and compact resolved input provenance.
 - **Validation:** the fitted pipeline, external scores, bootstrapped performance
-  metrics, SHAP values, selected features, and an external-alignment report.
+  metrics, SHAP values, selected features, encoded targets, resolved input
+  provenance, and an external-alignment report.
 
 Saved pipelines include preprocessing and feature selection. Always predict
 through the complete pipeline rather than extracting only its final estimator.
@@ -412,7 +415,7 @@ through the complete pipeline rather than extracting only its final estimator.
 The plotting API can consume one result file or aggregate repeated runs:
 
 ```python
-from phipml.plots.auc_shap_summary import plot_result_files
+from phipml.plots.result_summary import plot_result_files
 
 plots = plot_result_files(
     ["results/nested_random-forest_Controls_vs_HCC_420.joblib"],
@@ -426,10 +429,172 @@ plots = plot_result_files(
 ```
 
 This produces a performance summary and, when SHAP values are present, global
-SHAP importance and heatmap figures. Supplying the corresponding feature matrix
-enables a SHAP beeswarm; supplying both features and targets also enables the
-feature-statistics table. Continuous clinical variables are treated separately
-from binary prevalence features in that table.
+SHAP importance, heatmap, and beeswarm figures. Standalone ROC,
+precision-recall, confusion-matrix, and classification-metric panels are also
+saved by default. Every selected figure is written as PDF, SVG, and PNG unless
+`output_formats`/`--formats` selects a smaller set. New result artifacts save
+the encoded target and a compact
+resolved configuration snapshot. The plotter uses the SHAP index and columns
+as the authoritative samples/features and reloads only their original values
+from the configured data and metadata. It does not rerun splitting, prevalence
+filtering, model fitting, or feature selection.
+
+The peptide-library metadata is loaded only for feature-table annotation, such
+as taxonomic, protein, or description columns. Continuous clinical variables
+are summarized by group mean rather than colored as peptide prevalence. Nested
+CV feature tables also report how often a feature was selected across outer
+folds; repeated-run tables combine selection opportunities across runs/folds.
+
+For repeated result files, feature display uses top-K SHAP frequency by
+default: each run ranks features by its mean absolute SHAP, and the plotter
+counts how often every feature occurs among that run's top K. Features are
+ordered by occurrence frequency, mean rank while present, and finally mean
+absolute SHAP. This prevents one unusually large run-specific SHAP value from
+dominating consistently important features. A single result retains the
+standard mean-absolute-SHAP ranking.
+
+For one result file, the plots use the uncertainty already saved during model
+evaluation: outer-fold SD for nested CV or bootstrap confidence intervals for
+external validation. For repeated files, run-level point estimates and SHAP
+values are aggregated and empirical between-run intervals are shown. These are
+labelled as repeated-run variability, not formal confidence intervals.
+
+The equivalent CLI accepts explicit paths or quoted glob patterns:
+
+```bash
+phipml-plot 'results/nested_random-forest_demo_*.joblib' \
+  --split train \
+  --class-labels Controls HCC \
+  --title 'Controls vs HCC' \
+  --feature-ranking top-k-frequency \
+  --ranking-top-k 30 \
+  --min-top-k-frequency 50 \
+  --max-display 20 \
+  --output-dir results/plots \
+  --output-prefix controls_vs_hcc
+```
+
+Select only the required plots and formats when preparing a specific panel:
+
+```bash
+phipml-plot results/validation_random-forest_external_420.joblib \
+  --split test \
+  --plots roc pr confusion \
+  --formats pdf svg \
+  --roc-color '#264653' \
+  --roc-band-color '#A8DADC' \
+  --pr-color '#8A5A44' \
+  --pr-band-color '#DDBEA9' \
+  --output-dir results/plots
+```
+
+Available plot names are `performance`, `roc`, `pr`, `confusion`,
+`classification`, `shap-beeswarm`, `shap-importance`, `shap-heatmap`, and
+`feature-table`; `all` is the default.
+
+For reproducible figure settings, start from
+[`configs/config_plotting.yaml`](configs/config_plotting.yaml). A plotting YAML
+can contain result paths, plot selection, output formats, ranking settings,
+colors, and feature-table options. Relative paths are resolved from that YAML,
+and explicit CLI arguments override its values:
+
+```bash
+phipml-plot --plot-config configs/config_plotting.yaml
+```
+
+SHAP beeswarm dots retain their standard feature-value coloring, controlled by
+`shap_cmap`/`--shap-cmap`. `class_colors`/`--class-colors` affects only the two
+prediction-direction labels above the beeswarm.
+
+`--ranking-top-k` determines how many features count as top-ranked in each
+run; `--max-display` independently controls how many of the frequency-ranked
+features are drawn. `--min-top-k-frequency` optionally requires occurrence in
+a minimum percentage of runs. Use `--feature-ranking mean-abs-shap` to restore
+the conventional across-run mean-importance ordering, or leave it as `auto`
+to use frequency ranking only when multiple files are supplied.
+
+For new artifacts, no extra input argument is needed while the saved absolute
+data paths remain valid. If the project or data moved, provide the updated YAML;
+its data, metadata, and optional library-metadata paths replace the embedded
+ones:
+
+```bash
+phipml-plot results/validation_random-forest_external_420.joblib \
+  --split test \
+  --config configs/config_standard.yaml \
+  --class-labels Controls HCC \
+  --table-annotation-columns Description Species \
+  --output-dir results/plots
+```
+
+Explicit tables remain available for old artifacts or custom plotting. Here
+the target may be part of the feature table:
+
+```bash
+phipml-plot results/validation_random-forest_external_420.joblib \
+  --split test \
+  --features-table data/external_features.csv \
+  --sample-column SampleName \
+  --target-column group_test \
+  --class-labels Controls HCC \
+  --output-dir results/plots
+```
+
+Alternatively, use separate `--features-table` and `--target-table` files.
+Explicit tables take precedence over reconstructed values, and
+`--library-metadata` overrides the library table from the configuration.
+
+The generated feature-importance CSV can also be curated and rendered again
+without recalculating its values. Keep `Feature`, `Feature type`, `Statistic`,
+`Mean |SHAP|`, and the two class-statistic columns unchanged; annotation text
+and row order may be edited:
+
+```bash
+phipml-plot results/nested_random-forest_demo_420.joblib \
+  --plots feature-table \
+  --feature-importance-table results/curated_feature_importance.csv \
+  --table-annotation-columns 'Short description' 'Short taxon' \
+  --max-display 15 \
+  --output-dir results/plots
+```
+
+`--output-dir` takes precedence over all defaults. If omitted, the plotter uses
+`classification.plot_output_dir` from an explicitly supplied YAML when present;
+otherwise it writes to a `plots/` directory beside the first result file.
+
+### Cohort metric heatmaps
+
+`phipml-heatmap` uses a tidy CSV/TSV manifest rather than inferring cohorts from
+filenames. Required columns are `training`, `validation`, and `path`; `split`
+is optional:
+
+```text
+training,validation,path,split
+Dutch,Dutch,results/nested_random-forest_dutch_420.joblib,train
+Dutch,German,results/validation_random-forest_german_420.joblib,test
+Dutch,Norwegian,results/validation_random-forest_norwegian_420.joblib,test
+```
+
+Plot ROC-AUC, AP, or a threshold-dependent classification metric:
+
+```bash
+phipml-heatmap --manifest results/manifest.csv \
+  --metric roc.auc \
+  --output results/roc_auc_heatmap.pdf
+
+phipml-heatmap --manifest results/manifest.csv \
+  --metric pr.ap \
+  --output results/ap_heatmap.pdf
+
+phipml-heatmap --manifest results/manifest.csv \
+  --metric classification.balanced_accuracy \
+  --vmin 0 --vmax 1 \
+  --output results/balanced_accuracy_heatmap.pdf
+```
+
+Cells with repeated files display the mean, SD, and number of runs. A cell
+represented by one external-validation file displays its saved confidence
+interval when available.
 
 Individual plotting functions are also available from
 `phipml.plots.helpers`, including:
@@ -443,6 +608,31 @@ Individual plotting functions are also available from
 - `plot_shap_heatmap`
 - `plot_shap_values`
 - `plot_feature_importance_table`
+
+The preferred high-level Python APIs are:
+
+```python
+from phipml.plots.result_summary import plot_result_files
+from phipml.plots.metric_heatmap import (
+    build_metric_matrix,
+    plot_metric_heatmap,
+)
+```
+
+`result_summary` is not limited to AUC: it normalizes and plots ROC-AUC,
+precision-recall/AP, confusion counts, threshold-dependent classification
+metrics, SHAP summaries, and feature tables. `metric_heatmap` accepts any saved
+scalar metric using a dotted name such as `roc.auc`, `pr.ap`,
+`classification.f1`, or `classification.balanced_accuracy`.
+
+The older modules `phipml.plots.auc_shap_summary` and
+`phipml.plots.auc_heatmap` are retained for compatibility with existing
+notebooks and legacy CLI commands. New code should use `result_summary` and
+`metric_heatmap` respectively.
+
+A runnable 50-peptide plotting example, including simulated sample metadata
+and peptide-library annotations, is available under
+[`mock_examples/plotting`](mock_examples/plotting/README.md).
 
 ## Development checks
 

@@ -32,7 +32,10 @@ plt.rcParams["figure.facecolor"] = "white"
 plt.rcParams["axes.facecolor"] = "white"
 plt.rcParams["axes.edgecolor"] = "black"
 plt.rcParams["axes.linewidth"] = 1.5
-plt.rcParams["font.family"] = "Arial"
+# Prefer Arial when available for manuscript continuity, while retaining the
+# Matplotlib-bundled DejaVu Sans fallback used in minimal Linux containers.
+plt.rcParams["font.family"] = "sans-serif"
+plt.rcParams["font.sans-serif"] = ["Arial", "DejaVu Sans"]
 plt.rcParams["text.color"] = "black"
 plt.rcParams["axes.labelcolor"] = "black"
 plt.rcParams["xtick.color"] = "black"
@@ -660,6 +663,7 @@ def plot_shap_values(
     cmap: Union[str, LinearSegmentedColormap] = "viridis",
     max_display: int = 30,
     group_tests: Optional[List[str]] = None,
+    group_label_colors: Optional[Sequence[str]] = None,
     pattern: Optional[str] = None,
     filename_label: str = "plot",
     plot_title: str = "",
@@ -696,6 +700,10 @@ def plot_shap_values(
 
     if group_tests is None:
         group_tests = ["group1", "group2"]
+    if group_label_colors is None:
+        group_label_colors = ["black", "black"]
+    if len(group_label_colors) != 2:
+        raise ValueError("group_label_colors must contain exactly two colors")
 
     # -------------------------
     # Figure / axis handling
@@ -757,7 +765,7 @@ def plot_shap_values(
             ha="center",
             va="bottom",
             fontsize=fontsize["xlabel"],
-            color="black",
+            color=group_label_colors[0],
             transform=trans,
             clip_on=False,
         )
@@ -768,7 +776,7 @@ def plot_shap_values(
             ha="center",
             va="bottom",
             fontsize=fontsize["xlabel"],
-            color="black",
+            color=group_label_colors[1],
             transform=trans,
             clip_on=False,
         )
@@ -1200,6 +1208,7 @@ def plot_classification_metric_bars(
         "precision",
         "recall",
         "specificity",
+        "negative_predictive_value",
         "f1",
         "mcc",
     )
@@ -1209,40 +1218,85 @@ def plot_classification_metric_bars(
         "Precision",
         "Sensitivity",
         "Specificity",
+        "Negative predictive value",
         "F1",
         "MCC",
     )
     missing = [key for key in metric_keys if key not in classification_metrics]
     if missing:
         raise KeyError(f"Classification metrics are missing: {missing}")
-    values = np.asarray(
+    point_values = np.asarray(
         [classification_metrics[key] for key in metric_keys],
         dtype=np.float64,
     )
-    if not np.isfinite(values).all():
+    if not np.isfinite(point_values).all():
         raise ValueError("Classification metrics contain NaN or infinite values")
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(6.2, 5.0))
     else:
         fig = ax.figure
-    positions = np.arange(len(values))
+    positions = np.arange(len(point_values))
+    values = point_values
+    fold_mean = classification_metrics.get("fold_mean")
+    fold_std = classification_metrics.get("fold_std")
+    has_fold_variability = (
+        isinstance(fold_mean, Mapping)
+        and isinstance(fold_std, Mapping)
+        and all(key in fold_mean and key in fold_std for key in metric_keys)
+    )
     has_intervals = all(
-        f"{key}_ci_low" in classification_metrics
-        and f"{key}_ci_high" in classification_metrics
+        (
+            f"{key}_ci_low" in classification_metrics
+            or f"{key}_ci_lower" in classification_metrics
+        )
+        and (
+            f"{key}_ci_high" in classification_metrics
+            or f"{key}_ci_upper" in classification_metrics
+        )
         for key in metric_keys
     )
     xerr: np.ndarray | None = None
     if has_intervals:
         lower = np.asarray(
-            [classification_metrics[f"{key}_ci_low"] for key in metric_keys],
+            [
+                classification_metrics.get(
+                    f"{key}_ci_low",
+                    classification_metrics.get(f"{key}_ci_lower"),
+                )
+                for key in metric_keys
+            ],
             dtype=np.float64,
         )
         upper = np.asarray(
-            [classification_metrics[f"{key}_ci_high"] for key in metric_keys],
+            [
+                classification_metrics.get(
+                    f"{key}_ci_high",
+                    classification_metrics.get(f"{key}_ci_upper"),
+                )
+                for key in metric_keys
+            ],
             dtype=np.float64,
         )
-        xerr = np.vstack([values - lower, upper - values])
+        # A percentile bootstrap interval is not mathematically required to
+        # contain the original point estimate, especially for very small
+        # validation cohorts. Matplotlib requires non-negative error lengths,
+        # so draw a zero-length side when that happens without altering the
+        # interval values retained in the result artifact.
+        xerr = np.vstack(
+            [
+                np.maximum(values - lower, 0.0),
+                np.maximum(upper - values, 0.0),
+            ]
+        )
+    elif has_fold_variability:
+        assert isinstance(fold_mean, Mapping)
+        assert isinstance(fold_std, Mapping)
+        values = np.asarray([fold_mean[key] for key in metric_keys], dtype=np.float64)
+        standard_deviation = np.asarray(
+            [fold_std[key] for key in metric_keys], dtype=np.float64
+        )
+        xerr = np.vstack([np.minimum(standard_deviation, values), standard_deviation])
     bars = ax.barh(
         positions,
         values,
@@ -1260,7 +1314,12 @@ def plot_classification_metric_bars(
     if threshold is not None:
         title = f"{title} (threshold = {float(threshold):.2f})"
     if has_intervals:
-        title += "\n(mean and 95% empirical interval)"
+        uncertainty = classification_metrics.get(
+            "uncertainty_label", "bootstrap/empirical interval"
+        )
+        title += f"\n({uncertainty})"
+    elif has_fold_variability:
+        title += "\n(outer-fold mean ± sample SD)"
     ax.set_title(title)
     ax.grid(axis="x", alpha=0.2)
     for bar, value in zip(bars, values):
@@ -1279,6 +1338,12 @@ def plot_performance_summary(
     *,
     class_labels: Sequence[str] = ("Negative", "Positive"),
     title: str | None = None,
+    roc_color: str = "#2A6F97",
+    roc_band_color: str = "#89C2D9",
+    pr_color: str = "#8A5A44",
+    pr_band_color: str = "#DDBEA9",
+    confusion_cmap: str = "Blues",
+    classification_color: str = "#52796F",
     output_path: str | Path | None = None,
     dpi: int = 600,
 ) -> tuple[Figure, np.ndarray]:
@@ -1294,18 +1359,30 @@ def plot_performance_summary(
     prevalence = positive_support / total_support if total_support else None
 
     fig, axes = plt.subplots(2, 2, figsize=(11.5, 10.0))
-    plot_roc_metrics(metrics["roc"], ax=axes[0, 0])
+    plot_roc_metrics(
+        metrics["roc"],
+        ax=axes[0, 0],
+        color=roc_color,
+        band_color=roc_band_color,
+    )
     plot_precision_recall_metrics(
         metrics["pr"],
         ax=axes[0, 1],
         positive_prevalence=prevalence,
+        color=pr_color,
+        band_color=pr_band_color,
     )
     plot_confusion_matrix_metrics(
         classification,
         class_labels=class_labels,
         ax=axes[1, 0],
+        cmap=confusion_cmap,
     )
-    plot_classification_metric_bars(classification, ax=axes[1, 1])
+    plot_classification_metric_bars(
+        classification,
+        ax=axes[1, 1],
+        color=classification_color,
+    )
     if title:
         fig.suptitle(title, fontsize=15, fontweight="bold")
     fig.tight_layout(rect=(0, 0, 1, 0.97 if title else 1))
@@ -1317,6 +1394,7 @@ def plot_shap_importance_bar(
     shap_values: pd.DataFrame | np.ndarray,
     *,
     feature_names: Sequence[str] | None = None,
+    feature_order: Sequence[str] | None = None,
     max_display: int = 20,
     ax: Axes | None = None,
     title: str = "Global SHAP feature importance",
@@ -1338,7 +1416,19 @@ def plot_shap_importance_bar(
         raise ValueError("max_display must be at least 1")
 
     importance = pd.Series(np.abs(values).mean(axis=0), index=names)
-    importance = importance.nlargest(min(max_display, len(importance))).sort_values()
+    if feature_order is None:
+        importance = importance.nlargest(
+            min(max_display, len(importance))
+        ).sort_values()
+    else:
+        ordered = [str(feature) for feature in feature_order]
+        missing = [feature for feature in ordered if feature not in importance.index]
+        if missing:
+            raise KeyError(f"feature_order contains unknown features: {missing[:10]}")
+        if not ordered:
+            raise ValueError("feature_order cannot be empty")
+        # barh draws the final entry at the top, so reverse a best-first order.
+        importance = importance.loc[ordered[:max_display]].iloc[::-1]
     if ax is None:
         height = max(4.0, 0.32 * len(importance) + 1.5)
         fig, ax = plt.subplots(figsize=(7.0, height))
@@ -1356,6 +1446,7 @@ def plot_shap_heatmap(
     shap_values: pd.DataFrame,
     *,
     target: pd.Series | None = None,
+    feature_order: Sequence[str] | None = None,
     max_display: int = 20,
     ax: Axes | None = None,
     title: str = "Signed SHAP values across samples",
@@ -1369,12 +1460,21 @@ def plot_shap_heatmap(
         raise ValueError("shap_values cannot be empty")
     if max_display < 1:
         raise ValueError("max_display must be at least 1")
-    top_features = (
-        shap_values.abs()
-        .mean(axis=0)
-        .nlargest(min(max_display, shap_values.shape[1]))
-        .index
-    )
+    if feature_order is None:
+        top_features = (
+            shap_values.abs()
+            .mean(axis=0)
+            .nlargest(min(max_display, shap_values.shape[1]))
+            .index
+        )
+    else:
+        ordered = [str(feature) for feature in feature_order]
+        missing = [feature for feature in ordered if feature not in shap_values.columns]
+        if missing:
+            raise KeyError(f"feature_order contains unknown features: {missing[:10]}")
+        if not ordered:
+            raise ValueError("feature_order cannot be empty")
+        top_features = pd.Index(ordered[:max_display])
     display = shap_values.loc[:, top_features]
     if target is not None:
         missing = display.index.difference(target.index)
@@ -1567,6 +1667,11 @@ def plot_feature_importance_table(
     group_labels: Sequence[str],
     max_display: int = 15,
     description_column: str = "Description",
+    annotation_columns: Sequence[str] | None = None,
+    title: str = "Top features by mean absolute SHAP value",
+    header_color: str = "#D9D9D9",
+    row_colors: Sequence[str] = ("#F6F6F6", "white"),
+    prevalence_cmap: str = "YlGn",
     output_path: str | Path | None = None,
 ) -> tuple[Figure, Axes]:
     """Render a compact top-feature table with prevalence-only cell coloring."""
@@ -1577,35 +1682,73 @@ def plot_feature_importance_table(
         raise KeyError(f"Feature-importance table is missing columns: {missing}")
     if max_display < 1:
         raise ValueError("max_display must be at least 1")
+    if len(row_colors) != 2:
+        raise ValueError("row_colors must contain exactly two colors")
 
     display = importance_table.head(max_display).copy()
-    if description_column not in display.columns:
-        display[description_column] = ""
-    display[description_column] = display[description_column].fillna("").astype(str)
-    display[description_column] = display[description_column].map(
-        lambda value: value if len(value) <= 55 else value[:52] + "..."
+    annotations = (
+        [description_column]
+        if annotation_columns is None
+        else list(dict.fromkeys(str(column) for column in annotation_columns))
     )
+    for annotation in annotations:
+        if annotation not in display.columns:
+            display[annotation] = ""
+        display[annotation] = display[annotation].fillna("").astype(str)
+        limit = 55 if annotation == description_column else 32
+        display[annotation] = display[annotation].map(
+            lambda value, limit=limit: (
+                value if len(value) <= limit else value[: limit - 3] + "..."
+            )
+        )
+    ranking_columns = [
+        column
+        for column in (
+            "Top-k SHAP frequency (%)",
+            "Mean rank when in top K",
+            "Selection frequency (%)",
+        )
+        if column in display.columns
+    ]
     columns = [
         "Feature",
-        description_column,
+        *annotations,
         "Feature type",
         "Statistic",
         labels[0],
         labels[1],
+        *ranking_columns,
         "Mean |SHAP|",
     ]
     display = display.loc[:, columns]
-    for column in (*labels, "Mean |SHAP|"):
+    for column in (*labels, *ranking_columns, "Mean |SHAP|"):
         display[column] = pd.to_numeric(display[column], errors="coerce").round(3)
 
     height = max(3.2, 0.42 * len(display) + 1.4)
-    fig, ax = plt.subplots(figsize=(12.5, height))
+    fig, ax = plt.subplots(
+        figsize=(
+            12.5
+            + 2.2 * max(len(annotations) - 1, 0)
+            + 1.4 * len(ranking_columns),
+            height,
+        )
+    )
     ax.axis("off")
+    column_widths = (
+        [0.18]
+        + [
+            0.30 if annotation == description_column else 0.18
+            for annotation in annotations
+        ]
+        + [0.15, 0.13, 0.1, 0.1]
+        + [0.14] * len(ranking_columns)
+        + [0.11]
+    )
     table_artist = ax.table(
         cellText=display.fillna("").values,
         colLabels=display.columns,
         cellLoc="center",
-        colWidths=[0.18, 0.34, 0.15, 0.13, 0.1, 0.1, 0.11],
+        colWidths=column_widths,
         bbox=[0, 0, 1, 1],
     )
     table_artist.auto_set_font_size(False)
@@ -1615,23 +1758,20 @@ def plot_feature_importance_table(
     for (row, column), cell in table_artist.get_celld().items():
         cell.set_edgecolor("white")
         if row == 0:
-            cell.set_facecolor("#D9D9D9")
+            cell.set_facecolor(header_color)
             cell.set_text_props(weight="bold")
             continue
-        cell.set_facecolor("#F6F6F6" if row % 2 else "white")
+        cell.set_facecolor(row_colors[0] if row % 2 else row_colors[1])
         if column in group_column_indices and prevalence_rows[row - 1]:
             raw_value = display.iloc[row - 1, column]
             if raw_value != "" and pd.notna(raw_value):
-                cell.set_facecolor(colormaps["YlGn"](float(raw_value) / 100.0))
-        if column in (0, 1):
+                cell.set_facecolor(
+                    colormaps[prevalence_cmap](float(raw_value) / 100.0)
+                )
+        if column <= len(annotations):
             cell.set_text_props(ha="left")
             cell.PAD = 0.02
-    ax.set_title(
-        "Top features by mean absolute SHAP value",
-        fontsize=12,
-        fontweight="bold",
-        pad=12,
-    )
+    ax.set_title(title, fontsize=12, fontweight="bold", pad=12)
     _save_optional_figure(fig, output_path)
     return fig, ax
 

@@ -310,6 +310,24 @@ def _save_result(result: dict[str, Any], path: Path) -> None:
     logger.info("Saved %s", path)
 
 
+def _data_context(
+    config: Config,
+    *,
+    artifact_type: str,
+    validation_name: str | None = None,
+) -> dict[str, Any]:
+    """Save only the resolved input context needed for later plotting."""
+    context: dict[str, Any] = {
+        "schema_version": 1,
+        "artifact_type": artifact_type,
+        "config_file": str(config.config_file.expanduser().resolve()),
+        "resolved_config": config.to_mapping(),
+    }
+    if validation_name is not None:
+        context["validation_name"] = validation_name
+    return context
+
+
 def _load_pretrained(
     settings: ClassificationRunSettings,
 ) -> Pipeline:
@@ -530,6 +548,12 @@ def main(argv: list[str] | None = None) -> int:
                 # "roc_metrics_train": train_metrics["roc"],
                 # "pr_metrics_train": train_metrics["pr"]
                 "selected_features_train": selected_features,
+                "target_train": y_train.copy(),
+                "feature_names_train": X_train.columns.tolist(),
+                "data_context": _data_context(
+                    config,
+                    artifact_type="nested_cv",
+                ),
             },
             settings.output_dir
             / (
@@ -580,7 +604,15 @@ def main(argv: list[str] | None = None) -> int:
     # Save every newly fitted full-cohort model independently of validation.
     if not settings.use_pretrained:
         _save_result(
-            {"best_estimator": best_estimator},
+            {
+                "best_estimator": best_estimator,
+                "target_train": y_train.copy(),
+                "feature_names_train": X_train.columns.tolist(),
+                "data_context": _data_context(
+                    config,
+                    artifact_type="training",
+                ),
+            },
             settings.output_dir
             / (
                 f"training_{settings.model_type}_"
@@ -655,6 +687,12 @@ def main(argv: list[str] | None = None) -> int:
                 # "pr_metrics_test": test_metrics["pr"],
                 "selected_features_test": selected_test_features,
                 "feature_report": feature_report,
+                "target_test": y_test.copy(),
+                "data_context": _data_context(
+                    config,
+                    artifact_type="validation",
+                    validation_name=validation.name,
+                ),
             },
             settings.output_dir
             / (

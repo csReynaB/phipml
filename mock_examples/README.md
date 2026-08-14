@@ -83,6 +83,11 @@ or more YAML configurations. The YAML files use `transposed: true`. Files with
 `training` and `external` cohorts use the metadata column `cohort` for
 selection.
 
+All scenarios share `peptide_library_metadata.csv`, a simulated annotation
+table covering the same 50 peptide IDs. It supplies descriptions, species,
+proteins, source libraries, and signal/noise roles for demonstrating annotated
+feature-importance tables. These annotations have no biological meaning.
+
 `phipml_mock_datasets_overview.xlsx` provides a human-readable
 inspection copy of the datasets and tuning space. PhIPML reads the CSV files,
 not this workbook.
@@ -97,7 +102,6 @@ python -m pip install -e .
 phipml -c mock_examples/perfect_signal/config.yaml
 phipml -c mock_examples/noisy_signal/config.yaml
 phipml -c mock_examples/tuned_noisy_signal/config_tuned_random_forest.yaml
-phipml -c mock_examples/external_validation_noisy/config_external_validation_noisy.yaml
 phipml -c mock_examples/external_validation_perfect/config_perfect_external_no_tuning.yaml
 phipml -c mock_examples/external_validation_noisy/config_noisy_external_no_tuning.yaml
 phipml -c mock_examples/external_validation_noisy/config_noisy_external_with_tuning.yaml
@@ -150,4 +154,14 @@ result = joblib.load(
 
 print(result["metrics_train"]["roc"]["auc"])
 print(result["metrics_train"]["pr"]["ap"])
+```
+
+## Plot the generated artifacts
+
+See [`plotting/README.md`](plotting/README.md) for reproducible commands that
+create plots from one nested-CV result, repeated nested-CV runs, and one noisy
+external validation. The complete demonstration can be run with:
+
+```bash
+bash mock_examples/plotting/run_plotting_demo.sh
 ```

@@ -1,9 +1,24 @@
+"""Legacy AUC heatmap utilities.
+
+This module retains the original AUC-specific helpers used by older notebooks
+and by the legacy ``phipml.cli.auc_heatmap`` command.  New code that plots any
+saved scalar metric (ROC-AUC, average precision, F1, balanced accuracy, and so
+on) should import from :mod:`phipml.plots.metric_heatmap` instead.
+
+The generic names are re-exported at the end of this module so existing imports
+continue to work while sharing the single implementation in
+``metric_heatmap.py``.
+"""
+
 import glob
 import os
 import pickle
 import re
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
 
 # Third-party
 import joblib
@@ -11,6 +26,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+
+from phipml.plots.result_summary import load_classification_result
 
 
 def _extract_auc(d: dict, split: str) -> float:
@@ -336,3 +353,201 @@ def heatmap_aucs(
     plt.savefig(outname, bbox_inches="tight", dpi=600)
 
     return 0
+
+
+# =====================================================================
+# Manifest-driven metric heatmaps
+# =====================================================================
+
+
+@dataclass(frozen=True)
+class MetricMatrixSummary:
+    """Point estimates and repeated-run variability for a metric matrix."""
+
+    mean: pd.DataFrame
+    standard_deviation: pd.DataFrame
+    lower: pd.DataFrame
+    upper: pd.DataFrame
+    n_runs: pd.DataFrame
+    metric: str
+
+
+def _nested_metric(metrics: dict, metric: str) -> float:
+    """Extract a dotted metric such as ``roc.auc`` or ``classification.f1``."""
+    section, separator, key = metric.partition(".")
+    if not separator or section not in metrics or key not in metrics[section]:
+        raise KeyError(
+            f"Metric {metric!r} was not found; use section.key, for example "
+            "'roc.auc', 'pr.ap', or 'classification.balanced_accuracy'"
+        )
+    value = float(metrics[section][key])
+    if not np.isfinite(value):
+        raise ValueError(f"Metric {metric!r} must be finite")
+    return value
+
+
+def _native_metric_interval(metrics: dict, metric: str) -> tuple[float, float] | None:
+    section, _, key = metric.partition(".")
+    values = metrics[section]
+    lower = values.get(f"{key}_ci_lower", values.get(f"{key}_ci_low"))
+    upper = values.get(f"{key}_ci_upper", values.get(f"{key}_ci_high"))
+    if lower is None or upper is None:
+        return None
+    return float(lower), float(upper)
+
+
+def build_metric_matrix(
+    records: pd.DataFrame,
+    *,
+    metric: str = "roc.auc",
+    training_column: str = "training",
+    validation_column: str = "validation",
+    path_column: str = "path",
+    split_column: str | None = "split",
+    order: list[str] | None = None,
+    interval: tuple[float, float] = (2.5, 97.5),
+) -> MetricMatrixSummary:
+    """Summarize result files listed in a tidy train/validation manifest.
+
+    Multiple files for one cell are summarized across run-level point
+    estimates. A single validation file retains its native bootstrap interval
+    when available; a single nested-CV file retains its point estimate only.
+    """
+    required = {training_column, validation_column, path_column}
+    missing = sorted(required - set(records.columns))
+    if missing:
+        raise KeyError(f"Metric manifest is missing columns: {missing}")
+    low_percentile, high_percentile = interval
+    if not 0.0 <= low_percentile < high_percentile <= 100.0:
+        raise ValueError("interval must contain increasing values within [0, 100]")
+
+    observations: dict[
+        tuple[str, str], list[tuple[float, tuple[float, float] | None]]
+    ] = defaultdict(list)
+    for row in records.to_dict(orient="records"):
+        training = str(row[training_column])
+        validation = str(row[validation_column])
+        requested_split: Literal["auto", "train", "test"] = "auto"
+        if split_column and split_column in row and pd.notna(row[split_column]):
+            raw_split = str(row[split_column]).lower()
+            if raw_split not in {"auto", "train", "test"}:
+                raise ValueError(f"Invalid split {raw_split!r} in metric manifest")
+            requested_split = raw_split  # type: ignore[assignment]
+        result = load_classification_result(row[path_column], split=requested_split)
+        observations[(training, validation)].append(
+            (
+                _nested_metric(result.metrics, metric),
+                _native_metric_interval(result.metrics, metric),
+            )
+        )
+
+    if not observations:
+        raise ValueError("Metric manifest contains no result files")
+    labels = order or sorted({label for pair in observations for label in pair})
+    unknown = sorted({label for pair in observations for label in pair} - set(labels))
+    if unknown:
+        raise ValueError(f"order does not contain manifest labels: {unknown}")
+
+    def empty() -> pd.DataFrame:
+        return pd.DataFrame(np.nan, index=labels, columns=labels, dtype=float)
+
+    mean, std, lower, upper, n_runs = empty(), empty(), empty(), empty(), empty()
+    for (training, validation), entries in observations.items():
+        values = np.asarray([entry[0] for entry in entries], dtype=np.float64)
+        mean.loc[validation, training] = values.mean()
+        n_runs.loc[validation, training] = len(values)
+        if len(values) > 1:
+            std.loc[validation, training] = values.std(ddof=1)
+            lower.loc[validation, training] = np.percentile(values, low_percentile)
+            upper.loc[validation, training] = np.percentile(values, high_percentile)
+        elif entries[0][1] is not None:
+            lower.loc[validation, training], upper.loc[validation, training] = entries[
+                0
+            ][1]
+    return MetricMatrixSummary(
+        mean=mean,
+        standard_deviation=std,
+        lower=lower,
+        upper=upper,
+        n_runs=n_runs,
+        metric=metric,
+    )
+
+
+def plot_metric_heatmap(
+    summary: MetricMatrixSummary,
+    *,
+    title: str | None = None,
+    palette: str = "YlGnBu",
+    vmin: float = 0.5,
+    vmax: float = 1.0,
+    annotate_uncertainty: bool = True,
+    figsize: tuple[float, float] | None = None,
+    output_path: str | Path | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """Plot a metric matrix with mean ± SD or native-CI annotations."""
+    size = max(6.0, 1.05 * len(summary.mean.columns))
+    fig, ax = plt.subplots(figsize=figsize or (size, size))
+    cmap = plt.get_cmap(palette).copy()
+    cmap.set_bad("#E6E6E6")
+    label = {
+        "roc.auc": "ROC-AUC",
+        "pr.ap": "Average precision",
+    }.get(summary.metric, summary.metric.replace("_", " ").title())
+    sns.heatmap(
+        summary.mean,
+        ax=ax,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        square=True,
+        linewidths=0.7,
+        linecolor="white",
+        cbar_kws={"label": label, "shrink": 0.8},
+        annot=False,
+    )
+    midpoint = (vmin + vmax) / 2.0
+    for row, validation in enumerate(summary.mean.index):
+        for column, training in enumerate(summary.mean.columns):
+            value = summary.mean.loc[validation, training]
+            if not np.isfinite(value):
+                continue
+            annotation = f"{value:.2f}"
+            count = summary.n_runs.loc[validation, training]
+            sd = summary.standard_deviation.loc[validation, training]
+            low = summary.lower.loc[validation, training]
+            high = summary.upper.loc[validation, training]
+            if annotate_uncertainty and np.isfinite(sd):
+                annotation += f"\n±{sd:.2f} (n={int(count)})"
+            elif annotate_uncertainty and np.isfinite(low) and np.isfinite(high):
+                annotation += f"\n[{low:.2f}, {high:.2f}]"
+            ax.text(
+                column + 0.5,
+                row + 0.5,
+                annotation,
+                ha="center",
+                va="center",
+                fontsize=9,
+                color="white" if value > midpoint else "black",
+            )
+    ax.set_xlabel("Training cohort")
+    ax.set_ylabel("Validation cohort")
+    ax.set_title(title or f"{label} across training and validation cohorts")
+    ax.tick_params(axis="x", rotation=45)
+    ax.tick_params(axis="y", rotation=0)
+    fig.tight_layout()
+    if output_path is not None:
+        path = Path(output_path).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(path, bbox_inches="tight", facecolor="white", dpi=600)
+    return fig, ax
+
+
+# The first generic metric-heatmap implementation lived in this historically
+# AUC-named module.  Keep those import paths working, but make the accurately
+# named module authoritative for all new code.
+from phipml.plots.metric_heatmap import (  # noqa: E402,F401
+    MetricMatrixSummary,
+    build_metric_matrix,
+    plot_metric_heatmap,
+)

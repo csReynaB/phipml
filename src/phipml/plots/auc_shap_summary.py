@@ -1,3 +1,16 @@
+"""Legacy ROC-AUC/SHAP plotting helpers and compatibility imports.
+
+The original project grouped ROC-AUC and SHAP reporting in this module.  The
+modern result-file API also supports precision-recall/AP, confusion matrices,
+threshold-dependent classification metrics, repeated-run uncertainty, SHAP
+stability, and feature tables, so new code should import it from
+:mod:`phipml.plots.result_summary`.
+
+The original helpers remain available for older notebooks and commands.  The
+modern names are re-exported at the end of this module for backward
+compatibility.
+"""
+
 # ======================
 # Standard library
 # ======================
@@ -917,3 +930,23 @@ def plot_result_files(
         feature_table=feature_table,
         feature_table_figure=feature_table_figure,
     )
+
+
+# The result-file API originally lived in this module. Re-export the refactored
+# implementation so existing notebooks keep working while new code may import
+# directly from ``phipml.plots.result_summary``.
+from phipml.plots.result_summary import (  # noqa: E402,F401
+    ClassificationResult,
+    ResultPlotOutput,
+    ShapAggregate,
+    add_validation_bootstrap_if_missing,
+    aggregate_result_metrics,
+    aggregate_shap_summary,
+    aggregate_shap_values,
+    bootstrap_validation_metrics,
+    load_classification_result,
+    plot_result_files,
+    rank_features_by_top_k_shap,
+    reconstruct_plot_data,
+    selected_feature_frequency,
+)

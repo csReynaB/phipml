@@ -1,0 +1,3 @@
+training,validation,path,split
+Noisy training,Noisy training,../noisy_signal/results/nested_random-forest_noisy_demo_420.joblib,train
+Noisy training,Noisy external,../external_validation_noisy/results_noisy_external_untuned/validation_random-forest_noisy_external_untuned_420.joblib,test

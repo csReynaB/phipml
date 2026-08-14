@@ -1,0 +1,36 @@
+# Repeated nested-CV plotting recipe used by run_plotting_demo.sh.
+plotting:
+  results:
+    - ../noisy_signal/results/nested_random-forest_noisy_demo_*.joblib
+  split: train
+  plots: [all]
+  formats: [pdf, svg, png]
+  dpi: 300
+  output_dir: output/nested_repeated
+  output_prefix: noisy_repeated
+  class_labels: [Control, Case]
+
+  feature_ranking: top-k-frequency
+  ranking_top_k: 15
+  min_top_k_frequency: 50
+  max_display: 10
+  shap_alignment: strict
+
+  class_colors: ["#4C78A8", "#E45756"]
+  colors:
+    roc: "#264653"
+    roc_band: "#A8DADC"
+    pr: "#8A5A44"
+    pr_band: "#DDBEA9"
+    confusion_cmap: Blues
+    classification: "#52796F"
+    shap_cmap: viridis
+    shap_heatmap_cmap: coolwarm
+    shap_importance: "#6D597A"
+
+  feature_table:
+    annotation_columns: [Description, Species, Protein]
+    title: Repeated-run top features
+    header_color: "#D9D9D9"
+    row_colors: ["#F6F6F6", white]
+    prevalence_cmap: YlGn

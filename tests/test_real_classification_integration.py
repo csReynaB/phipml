@@ -751,6 +751,15 @@ def test_real_cli_yaml_to_saved_training_model(tmp_path: Path) -> None:
     model_path = tmp_path / "results" / "training_random-forest_synthetic_420.joblib"
     assert model_path.is_file()
     saved = joblib.load(model_path)
-    assert set(saved) == {"best_estimator"}
+    assert set(saved) == {
+        "best_estimator",
+        "target_train",
+        "feature_names_train",
+        "data_context",
+    }
     assert isinstance(saved["best_estimator"], Pipeline)
     assert hasattr(saved["best_estimator"].named_steps["estimator"], "classes_")
+    assert saved["target_train"].index.tolist() == X.index.tolist()
+    assert Path(saved["data_context"]["resolved_config"]["data_input"]).is_absolute()
+    saved_metadata = saved["data_context"]["resolved_config"]["metadata_input"]
+    assert Path(saved_metadata).is_absolute()

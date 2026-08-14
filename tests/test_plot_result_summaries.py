@@ -196,7 +196,7 @@ def test_plot_result_files_creates_performance_and_shap_outputs(tmp_path: Path) 
         "demo_performance.pdf",
         "demo_shap_importance.pdf",
         "demo_shap_heatmap.pdf",
-        "shap_Control-Case_demo.pdf",
+        "demo_shap_beeswarm.pdf",
         "demo_feature_importance.csv",
         "demo_feature_table.pdf",
     }

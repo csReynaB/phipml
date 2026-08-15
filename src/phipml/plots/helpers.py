@@ -1174,8 +1174,7 @@ def plot_confusion_matrix_metrics(
         fig = ax.figure
     sns.heatmap(
         proportions,
-        annot=annotations,
-        fmt="",
+        annot=False,
         cmap=cmap,
         vmin=0.0,
         vmax=1.0,
@@ -1187,6 +1186,19 @@ def plot_confusion_matrix_metrics(
         yticklabels=class_labels,
         ax=ax,
     )
+    # Add annotations explicitly instead of relying on seaborn's object-array
+    # annotation handling. Some seaborn/matplotlib combinations silently omit
+    # the second row even though the heatmap colors are drawn correctly.
+    for row in range(2):
+        for column in range(2):
+            ax.text(
+                column + 0.5,
+                row + 0.5,
+                str(annotations[row, column]),
+                ha="center",
+                va="center",
+                color="white" if proportions[row, column] >= 0.65 else "#202020",
+            )
     ax.set_xlabel("Predicted class")
     ax.set_ylabel("True class")
     ax.set_title(title)
@@ -1668,13 +1680,21 @@ def plot_feature_importance_table(
     max_display: int = 15,
     description_column: str = "Description",
     annotation_columns: Sequence[str] | None = None,
+    extra_columns: Sequence[str] | None = None,
     title: str = "Top features by mean absolute SHAP value",
     header_color: str = "#D9D9D9",
     row_colors: Sequence[str] = ("#F6F6F6", "white"),
     prevalence_cmap: str = "YlGn",
     output_path: str | Path | None = None,
 ) -> tuple[Figure, Axes]:
-    """Render a compact top-feature table with prevalence-only cell coloring."""
+    """Render a compact top-feature table with prevalence-only cell coloring.
+
+    The figure displays only feature names, requested annotations, the two
+    class summaries, and mean absolute SHAP by default. Audit columns such as
+    feature type, statistic, top-K frequency, mean rank, and model-selection
+    frequency remain in the generated CSV and are drawn only when explicitly
+    requested through ``extra_columns``.
+    """
     labels = [str(label) for label in group_labels]
     required = {"Feature", "Feature type", "Statistic", "Mean |SHAP|", *labels}
     missing = sorted(required - set(importance_table.columns))
@@ -1685,7 +1705,8 @@ def plot_feature_importance_table(
     if len(row_colors) != 2:
         raise ValueError("row_colors must contain exactly two colors")
 
-    display = importance_table.head(max_display).copy()
+    source_display = importance_table.head(max_display).copy()
+    display = source_display.copy()
     annotations = (
         [description_column]
         if annotation_columns is None
@@ -1701,35 +1722,44 @@ def plot_feature_importance_table(
                 value if len(value) <= limit else value[: limit - 3] + "..."
             )
         )
-    ranking_columns = [
-        column
-        for column in (
-            "Top-k SHAP frequency (%)",
-            "Mean rank when in top K",
-            "Selection frequency (%)",
-        )
-        if column in display.columns
+    requested_extra_columns = list(
+        dict.fromkeys(str(column) for column in (extra_columns or ()))
+    )
+    reserved = {"Feature", *annotations, *labels, "Mean |SHAP|"}
+    requested_extra_columns = [
+        column for column in requested_extra_columns if column not in reserved
     ]
+    missing_extra_columns = [
+        column for column in requested_extra_columns if column not in display.columns
+    ]
+    if missing_extra_columns:
+        raise KeyError(
+            "Requested feature-table columns were not found: "
+            f"{missing_extra_columns}"
+        )
     columns = [
         "Feature",
         *annotations,
-        "Feature type",
-        "Statistic",
         labels[0],
         labels[1],
-        *ranking_columns,
+        *requested_extra_columns,
         "Mean |SHAP|",
     ]
     display = display.loc[:, columns]
-    for column in (*labels, *ranking_columns, "Mean |SHAP|"):
+    numeric_extra_columns = [
+        column
+        for column in requested_extra_columns
+        if pd.api.types.is_numeric_dtype(source_display[column])
+    ]
+    for column in (*labels, *numeric_extra_columns, "Mean |SHAP|"):
         display[column] = pd.to_numeric(display[column], errors="coerce").round(3)
 
     height = max(3.2, 0.42 * len(display) + 1.4)
     fig, ax = plt.subplots(
         figsize=(
-            12.5
+            8.5
             + 2.2 * max(len(annotations) - 1, 0)
-            + 1.4 * len(ranking_columns),
+            + 1.2 * len(requested_extra_columns),
             height,
         )
     )
@@ -1740,8 +1770,8 @@ def plot_feature_importance_table(
             0.30 if annotation == description_column else 0.18
             for annotation in annotations
         ]
-        + [0.15, 0.13, 0.1, 0.1]
-        + [0.14] * len(ranking_columns)
+        + [0.1, 0.1]
+        + [0.14] * len(requested_extra_columns)
         + [0.11]
     )
     table_artist = ax.table(
@@ -1753,7 +1783,7 @@ def plot_feature_importance_table(
     )
     table_artist.auto_set_font_size(False)
     table_artist.set_fontsize(8.5)
-    prevalence_rows = display["Statistic"].eq("Prevalence (%)").to_numpy()
+    prevalence_rows = source_display["Statistic"].eq("Prevalence (%)").to_numpy()
     group_column_indices = [display.columns.get_loc(label) for label in labels]
     for (row, column), cell in table_artist.get_celld().items():
         cell.set_edgecolor("white")

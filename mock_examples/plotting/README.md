@@ -41,6 +41,8 @@ phipml-plot \
   mock_examples/noisy_signal/results/nested_random-forest_noisy_demo_420.joblib \
   --split train \
   --feature-ranking mean-abs-shap \
+  --library-metadata mock_examples/peptide_library_metadata.csv \
+  --library-id-column peptide_id \
   --table-annotation-columns Description Species Protein \
   --output-dir mock_examples/plotting/output/nested_single \
   --output-prefix noisy_nested
@@ -68,6 +70,8 @@ phipml -c \
 phipml-plot \
   mock_examples/external_validation_noisy/results_noisy_external_untuned/validation_random-forest_noisy_external_untuned_420.joblib \
   --split test \
+  --library-metadata mock_examples/peptide_library_metadata.csv \
+  --library-id-column peptide_id \
   --table-annotation-columns Description Species Protein \
   --output-dir mock_examples/plotting/output/external_validation \
   --output-prefix noisy_external
@@ -105,9 +109,20 @@ All available plots and PDF/SVG/PNG output are enabled by default. Use
 `--plots` and `--formats` (or the equivalent plotting-YAML keys) to request a
 smaller subset.
 
+The compact feature-table figure omits audit columns by default, while the
+generated CSV retains them. Use `--table-extra-columns`, or
+`feature_table.extra_columns` in plotting YAML, to display columns such as
+`Feature type`, `Statistic`, `Top-k SHAP frequency (%)`,
+`Mean rank when in top K`, or `Selection frequency (%)`.
+
 For repeated joblib inputs, performance and SHAP values are aggregated across
 runs. The repeated example ranks features by how often they occur among each
 run's top 15 and displays the leading 10 features that occur in at least 50%
 of runs. The feature table also reports mean top-K rank, SHAP stability, and
 model feature-selection frequency. The synthetic annotations exist only to
 demonstrate the interface and have no biological meaning.
+
+The metric heatmap is rectangular by default: it shows only training cohorts
+present in the manifest as columns and validation cohorts present as rows.
+Thus the demonstration has one training column and two evaluation rows rather
+than gray cells for models that were never fitted.

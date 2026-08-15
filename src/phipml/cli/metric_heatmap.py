@@ -21,7 +21,24 @@ def parse_args_metric_heatmap(argv: list[str] | None = None) -> argparse.Namespa
         help="CSV/TSV with training, validation, path, and optional split columns",
     )
     parser.add_argument("--metric", default="roc.auc")
-    parser.add_argument("--order", nargs="+", default=None)
+    parser.add_argument(
+        "--order",
+        nargs="+",
+        default=None,
+        help="Use one shared order for a square matrix (legacy behavior)",
+    )
+    parser.add_argument(
+        "--training-order",
+        nargs="+",
+        default=None,
+        help="Optional order of training-cohort columns",
+    )
+    parser.add_argument(
+        "--validation-order",
+        nargs="+",
+        default=None,
+        help="Optional order of validation-cohort rows",
+    )
     parser.add_argument("--title", default=None)
     parser.add_argument("--palette", default="YlGnBu")
     parser.add_argument("--vmin", type=float, default=0.5)
@@ -60,6 +77,8 @@ def main(argv: list[str] | None = None) -> int:
         _read_manifest(args.manifest),
         metric=args.metric,
         order=args.order,
+        training_order=args.training_order,
+        validation_order=args.validation_order,
     )
     plot_metric_heatmap(
         summary,

@@ -72,6 +72,15 @@ plotting:
     input: null
     title: Top features by mean absolute SHAP value
     annotation_columns: [Description, Species]
+    # The figure is compact by default. These audit columns always remain in
+    # the generated CSV and are shown in the figure only when listed here.
+    extra_columns: []
+    # extra_columns:
+    #   - Feature type
+    #   - Statistic
+    #   - Top-k SHAP frequency (%)
+    #   - Mean rank when in top K
+    #   - Selection frequency (%)
     header_color: "#D9D9D9"
     row_colors: ["#F6F6F6", white]
     prevalence_cmap: YlGn

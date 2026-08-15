@@ -558,6 +558,21 @@ phipml-plot results/nested_random-forest_demo_420.joblib \
   --output-dir results/plots
 ```
 
+The compact feature-table figure shows `Feature`, requested annotation
+columns, the two class summaries, and `Mean |SHAP|` by default. Audit columns
+remain in the generated CSV. Add them to the figure only when needed:
+
+```bash
+phipml-plot results/nested_random-forest_demo_420.joblib \
+  --plots feature-table \
+  --table-extra-columns \
+    'Feature type' \
+    'Statistic' \
+    'Top-k SHAP frequency (%)' \
+    'Mean rank when in top K' \
+    'Selection frequency (%)'
+```
+
 `--output-dir` takes precedence over all defaults. If omitted, the plotter uses
 `classification.plot_output_dir` from an explicitly supplied YAML when present;
 otherwise it writes to a `plots/` directory beside the first result file.
@@ -594,7 +609,12 @@ phipml-heatmap --manifest results/manifest.csv \
 
 Cells with repeated files display the mean, SD, and number of runs. A cell
 represented by one external-validation file displays its saved confidence
-interval when available.
+interval when available, while one nested-CV file displays its saved
+outer-fold SD. By default, rows and columns are derived independently from the
+observed validation and training labels, producing a compact rectangular
+matrix without empty combinations. `--order` deliberately requests the legacy
+square layout; use `--training-order` and `--validation-order` to control the
+two axes separately.
 
 Individual plotting functions are also available from
 `phipml.plots.helpers`, including:

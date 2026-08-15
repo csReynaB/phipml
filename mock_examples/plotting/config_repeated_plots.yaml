@@ -9,6 +9,8 @@ plotting:
   output_dir: output/nested_repeated
   output_prefix: noisy_repeated
   class_labels: [Control, Case]
+  library_metadata: ../peptide_library_metadata.csv
+  library_id_column: peptide_id
 
   feature_ranking: top-k-frequency
   ranking_top_k: 15
@@ -30,6 +32,7 @@ plotting:
 
   feature_table:
     annotation_columns: [Description, Species, Protein]
+    extra_columns: []
     title: Repeated-run top features
     header_color: "#D9D9D9"
     row_colors: ["#F6F6F6", white]

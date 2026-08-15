@@ -21,7 +21,11 @@ from phipml.plots.metric_heatmap import (  # noqa: E402
     build_metric_matrix,
     plot_metric_heatmap,
 )
-from phipml.plots.helpers import plot_classification_metric_bars  # noqa: E402
+from phipml.plots.helpers import (  # noqa: E402
+    plot_classification_metric_bars,
+    plot_confusion_matrix_metrics,
+    plot_feature_importance_table,
+)
 from phipml.plots.result_summary import (  # noqa: E402
     aggregate_result_metrics,
     aggregate_shap_summary,
@@ -227,6 +231,64 @@ def test_nested_classification_plot_uses_all_metrics_and_fold_sd() -> None:
     assert len(axis.patches) == 8
     assert "outer-fold mean" in axis.get_title()
     assert figure is axis.figure
+
+
+def test_confusion_matrix_annotates_all_four_cells() -> None:
+    figure, axis = plot_confusion_matrix_metrics(
+        _classification(),
+        class_labels=("Control", "Case"),
+    )
+
+    labels = {text.get_text() for text in axis.texts}
+    assert {"8\n80.0%", "2\n20.0%", "3\n30.0%", "7\n70.0%"}.issubset(
+        labels
+    )
+    assert figure.axes
+
+
+def test_feature_table_is_compact_unless_extra_columns_are_requested() -> None:
+    importance = pd.DataFrame(
+        {
+            "Feature": ["agilent_signal"],
+            "Description": ["Synthetic signal"],
+            "Feature type": ["peptide"],
+            "Statistic": ["Prevalence (%)"],
+            "Control": [20.0],
+            "Case": [80.0],
+            "Top-k SHAP frequency (%)": [100.0],
+            "Mean rank when in top K": [1.0],
+            "Selection frequency (%)": [100.0],
+            "Mean |SHAP|": [0.25],
+        }
+    )
+
+    _, compact_axis = plot_feature_importance_table(
+        importance,
+        group_labels=("Control", "Case"),
+    )
+    compact_headers = {
+        compact_axis.tables[0][0, column].get_text().get_text()
+        for column in range(5)
+    }
+    assert compact_headers == {
+        "Feature",
+        "Description",
+        "Control",
+        "Case",
+        "Mean |SHAP|",
+    }
+
+    _, detailed_axis = plot_feature_importance_table(
+        importance,
+        group_labels=("Control", "Case"),
+        extra_columns=("Feature type", "Top-k SHAP frequency (%)"),
+    )
+    detailed_headers = {
+        detailed_axis.tables[0][0, column].get_text().get_text()
+        for column in range(7)
+    }
+    assert "Feature type" in detailed_headers
+    assert "Top-k SHAP frequency (%)" in detailed_headers
 
 
 def test_repeated_metrics_have_empirical_intervals_not_formal_ci(
@@ -440,7 +502,11 @@ def test_metric_matrix_supports_repeats_and_native_validation_ci(
     nested_1 = tmp_path / "nested_1.joblib"
     nested_2 = tmp_path / "nested_2.joblib"
     validation = tmp_path / "validation.joblib"
-    _write_result(nested_1, split="train", metrics=_metrics(auc=0.74))
+    _write_result(
+        nested_1,
+        split="train",
+        metrics=_metrics(auc=0.74, nested_variability=True),
+    )
     _write_result(nested_2, split="train", metrics=_metrics(auc=0.82))
     _write_result(
         validation,
@@ -461,6 +527,14 @@ def test_metric_matrix_supports_repeats_and_native_validation_ci(
     assert summary.standard_deviation.loc["A", "A"] > 0
     assert summary.mean.loc["B", "A"] == pytest.approx(0.77)
     assert summary.lower.loc["B", "A"] == pytest.approx(0.65)
+
+    compact = build_metric_matrix(records, metric="roc.auc")
+    assert compact.mean.shape == (2, 1)
+    assert compact.mean.index.tolist() == ["A", "B"]
+    assert compact.mean.columns.tolist() == ["A"]
+
+    single_run = build_metric_matrix(records.iloc[[0, 2]], metric="roc.auc")
+    assert single_run.standard_deviation.loc["A", "A"] == pytest.approx(0.05)
     output = tmp_path / "heatmap.pdf"
     figure, _ = plot_metric_heatmap(summary, output_path=output)
     assert output.is_file() and output.stat().st_size > 0

@@ -20,6 +20,8 @@ phipml-plot \
   "$EXAMPLES_DIR/noisy_signal/results/nested_random-forest_noisy_demo_420.joblib" \
   --split train \
   --feature-ranking mean-abs-shap \
+  --library-metadata "$EXAMPLES_DIR/peptide_library_metadata.csv" \
+  --library-id-column peptide_id \
   --table-annotation-columns Description Species Protein \
   --output-dir "$OUTPUT_DIR/nested_single" \
   --output-prefix noisy_nested
@@ -29,6 +31,8 @@ phipml-plot --plot-config "$SCRIPT_DIR/config_repeated_plots.yaml"
 phipml-plot \
   "$EXAMPLES_DIR/external_validation_noisy/results_noisy_external_untuned/validation_random-forest_noisy_external_untuned_420.joblib" \
   --split test \
+  --library-metadata "$EXAMPLES_DIR/peptide_library_metadata.csv" \
+  --library-id-column peptide_id \
   --table-annotation-columns Description Species Protein \
   --output-dir "$OUTPUT_DIR/external_validation" \
   --output-prefix noisy_external

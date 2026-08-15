@@ -183,6 +183,18 @@ def parse_args_plot_results(argv: list[str] | None = None) -> argparse.Namespace
         ),
     )
     parser.add_argument(
+        "--table-extra-columns",
+        nargs="+",
+        default=None,
+        metavar="COLUMN",
+        help=(
+            "Optional audit columns displayed in the compact table, for "
+            "example 'Feature type', 'Statistic', 'Top-k SHAP frequency (%)', "
+            "'Mean rank when in top K', or 'Selection frequency (%)'. They "
+            "remain available in the CSV when omitted from the figure."
+        ),
+    )
+    parser.add_argument(
         "--validation-bootstraps",
         type=int,
         default=None,
@@ -472,6 +484,12 @@ def main(argv: list[str] | None = None) -> int:
         ),
         name="feature_table.annotation_columns",
     )
+    extra_columns = _name_sequence(
+        args.table_extra_columns
+        if args.table_extra_columns is not None
+        else feature_table_settings.get("extra_columns"),
+        name="feature_table.extra_columns",
+    )
 
     plot_result_files(
         result_paths,
@@ -489,6 +507,7 @@ def main(argv: list[str] | None = None) -> int:
         oligos_metadata=library_metadata,
         feature_importance_table=curated_table,
         table_annotation_columns=annotation_columns,
+        table_extra_columns=extra_columns,
         feature_table_title=str(
             args.feature_table_title
             if args.feature_table_title is not None

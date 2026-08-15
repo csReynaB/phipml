@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -54,6 +55,24 @@ def _native_metric_interval(
     return float(lower), float(upper)
 
 
+def _native_metric_standard_deviation(
+    metrics: dict,
+    metric: str,
+) -> float | None:
+    """Return saved outer-fold SD for one nested-CV artifact, when available."""
+    section, _, key = metric.partition(".")
+    values = metrics[section]
+    standard_deviation = values.get(f"{key}_std")
+    if standard_deviation is None and section == "classification":
+        fold_standard_deviation = values.get("fold_std")
+        if isinstance(fold_standard_deviation, Mapping):
+            standard_deviation = fold_standard_deviation.get(key)
+    if standard_deviation is None:
+        return None
+    value = float(standard_deviation)
+    return value if np.isfinite(value) and value >= 0.0 else None
+
+
 def build_metric_matrix(
     records: pd.DataFrame,
     *,
@@ -62,14 +81,21 @@ def build_metric_matrix(
     validation_column: str = "validation",
     path_column: str = "path",
     split_column: str | None = "split",
-    order: list[str] | None = None,
+    order: Sequence[str] | None = None,
+    training_order: Sequence[str] | None = None,
+    validation_order: Sequence[str] | None = None,
     interval: tuple[float, float] = (2.5, 97.5),
 ) -> MetricMatrixSummary:
     """Summarize result files listed in a tidy train/validation manifest.
 
     Multiple files for one cell are summarized across run-level point
     estimates. A single validation file retains its native bootstrap interval
-    when available; a single nested-CV file retains its point estimate only.
+    when available; a single nested-CV file retains its outer-fold SD.
+
+    By default the output is rectangular: rows contain observed validation
+    cohorts and columns contain observed training cohorts. ``order`` retains
+    the historical square-matrix behavior. Use ``training_order`` and
+    ``validation_order`` to control the two axes independently.
     """
     required = {training_column, validation_column, path_column}
     missing = sorted(required - set(records.columns))
@@ -79,8 +105,16 @@ def build_metric_matrix(
     if not 0.0 <= low_percentile < high_percentile <= 100.0:
         raise ValueError("interval must contain increasing values within [0, 100]")
 
+    if order is not None and (
+        training_order is not None or validation_order is not None
+    ):
+        raise ValueError(
+            "order cannot be combined with training_order or validation_order"
+        )
+
     observations: dict[
-        tuple[str, str], list[tuple[float, tuple[float, float] | None]]
+        tuple[str, str],
+        list[tuple[float, tuple[float, float] | None, float | None]],
     ] = defaultdict(list)
     for row in records.to_dict(orient="records"):
         training = str(row[training_column])
@@ -96,18 +130,49 @@ def build_metric_matrix(
             (
                 _nested_metric(result.metrics, metric),
                 _native_metric_interval(result.metrics, metric),
+                _native_metric_standard_deviation(result.metrics, metric),
             )
         )
 
     if not observations:
         raise ValueError("Metric manifest contains no result files")
-    labels = order or sorted({label for pair in observations for label in pair})
-    unknown = sorted({label for pair in observations for label in pair} - set(labels))
-    if unknown:
-        raise ValueError(f"order does not contain manifest labels: {unknown}")
+
+    observed_training = list(
+        dict.fromkeys(training for training, _ in observations)
+    )
+    observed_validation = list(
+        dict.fromkeys(validation for _, validation in observations)
+    )
+    if order is not None:
+        training_labels = [str(label) for label in order]
+        validation_labels = training_labels.copy()
+    else:
+        training_labels = (
+            [str(label) for label in training_order]
+            if training_order is not None
+            else observed_training
+        )
+        validation_labels = (
+            [str(label) for label in validation_order]
+            if validation_order is not None
+            else observed_validation
+        )
+    unknown_training = sorted(set(observed_training) - set(training_labels))
+    unknown_validation = sorted(set(observed_validation) - set(validation_labels))
+    if unknown_training or unknown_validation:
+        raise ValueError(
+            "Heatmap orders do not contain all manifest labels; "
+            f"missing training={unknown_training}, "
+            f"missing validation={unknown_validation}"
+        )
 
     def empty() -> pd.DataFrame:
-        return pd.DataFrame(np.nan, index=labels, columns=labels, dtype=float)
+        return pd.DataFrame(
+            np.nan,
+            index=validation_labels,
+            columns=training_labels,
+            dtype=float,
+        )
 
     mean, std, lower, upper, n_runs = empty(), empty(), empty(), empty(), empty()
     for (training, validation), entries in observations.items():
@@ -122,6 +187,8 @@ def build_metric_matrix(
             lower.loc[validation, training], upper.loc[validation, training] = entries[
                 0
             ][1]
+        elif entries[0][2] is not None:
+            std.loc[validation, training] = entries[0][2]
     return MetricMatrixSummary(
         mean=mean,
         standard_deviation=std,
@@ -144,8 +211,9 @@ def plot_metric_heatmap(
     output_path: str | Path | None = None,
 ) -> tuple[plt.Figure, plt.Axes]:
     """Plot a metric matrix with mean ± SD or native-CI annotations."""
-    size = max(6.0, 1.05 * len(summary.mean.columns))
-    fig, ax = plt.subplots(figsize=figsize or (size, size))
+    width = max(4.8, 1.25 * len(summary.mean.columns) + 2.5)
+    height = max(4.2, 1.05 * len(summary.mean.index) + 2.4)
+    fig, ax = plt.subplots(figsize=figsize or (width, height))
     cmap = plt.get_cmap(palette).copy()
     cmap.set_bad("#E6E6E6")
     label = {
@@ -176,9 +244,12 @@ def plot_metric_heatmap(
             low = summary.lower.loc[validation, training]
             high = summary.upper.loc[validation, training]
             if annotate_uncertainty and np.isfinite(sd):
-                annotation += f"\n±{sd:.2f} (n={int(count)})"
+                if count > 1:
+                    annotation += f"\n±{sd:.2f} ({int(count)} runs)"
+                else:
+                    annotation += f"\n±{sd:.2f}\n(outer-fold SD)"
             elif annotate_uncertainty and np.isfinite(low) and np.isfinite(high):
-                annotation += f"\n[{low:.2f}, {high:.2f}]"
+                annotation += f"\n95% CI [{low:.2f}, {high:.2f}]"
             ax.text(
                 column + 0.5,
                 row + 0.5,

@@ -14,17 +14,27 @@ import yaml
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from phipml.cli.metric_heatmap import main as heatmap_main  # noqa: E402
+from phipml.cli.metric_heatmap import (  # noqa: E402
+    main as heatmap_main,
+    parse_args_metric_heatmap,
+)
 from phipml.cli.plot_results import main as plot_main  # noqa: E402
 from phipml.io.data_handler import Config  # noqa: E402
-from phipml.plots.metric_heatmap import (  # noqa: E402
-    build_metric_matrix,
-    plot_metric_heatmap,
-)
 from phipml.plots.helpers import (  # noqa: E402
+    PHIPML_PREVALENCE_CMAP_NAME,
+    PHIPML_SHAP_CMAP_NAME,
+    PHIPML_SHAP_HEATMAP_CMAP_NAME,
     plot_classification_metric_bars,
     plot_confusion_matrix_metrics,
     plot_feature_importance_table,
+    plot_precision_recall_metrics,
+    plot_roc_metrics,
+    plot_shap_heatmap,
+    plot_shap_values,
+)
+from phipml.plots.metric_heatmap import (  # noqa: E402
+    build_metric_matrix,
+    plot_metric_heatmap,
 )
 from phipml.plots.result_summary import (  # noqa: E402
     aggregate_result_metrics,
@@ -233,6 +243,21 @@ def test_nested_classification_plot_uses_all_metrics_and_fold_sd() -> None:
     assert figure is axis.figure
 
 
+def test_metric_annotations_use_two_decimals_and_clear_the_error_bars() -> None:
+    metrics = _metrics(nested_variability=True)
+    _, roc_axis = plot_roc_metrics(metrics["roc"])
+    _, pr_axis = plot_precision_recall_metrics(metrics["pr"])
+    _, bar_axis = plot_classification_metric_bars(metrics["classification"])
+
+    assert "Mean AUC = 0.80 ± 0.05" in roc_axis.get_legend().get_texts()[0].get_text()
+    assert "Mean AP = 0.78 ± 0.07" in pr_axis.get_legend().get_texts()[0].get_text()
+    value_labels = [text for text in bar_axis.texts if text.get_text() == "0.75"]
+    assert value_labels
+    first_bar = bar_axis.patches[0]
+    first_bar_center = first_bar.get_y() + first_bar.get_height() / 2
+    assert value_labels[0].get_position()[1] < first_bar_center
+
+
 def test_confusion_matrix_annotates_all_four_cells() -> None:
     figure, axis = plot_confusion_matrix_metrics(
         _classification(),
@@ -240,10 +265,97 @@ def test_confusion_matrix_annotates_all_four_cells() -> None:
     )
 
     labels = {text.get_text() for text in axis.texts}
-    assert {"8\n80.0%", "2\n20.0%", "3\n30.0%", "7\n70.0%"}.issubset(
-        labels
-    )
+    assert {"8\n80.0%", "2\n20.0%", "3\n30.0%", "7\n70.0%"}.issubset(labels)
+    assert [tick.get_text() for tick in axis.get_xticklabels()] == ["Case", "Control"]
+    assert [tick.get_text() for tick in axis.get_yticklabels()] == ["Case", "Control"]
+    annotations_by_position = {
+        tuple(text.get_position()): text.get_text() for text in axis.texts
+    }
+    assert annotations_by_position[(0.5, 0.5)] == "7\n70.0%"
+    assert annotations_by_position[(1.5, 0.5)] == "3\n30.0%"
+    assert annotations_by_position[(0.5, 1.5)] == "2\n20.0%"
+    assert annotations_by_position[(1.5, 1.5)] == "8\n80.0%"
     assert figure.axes
+
+
+def test_custom_prevalence_palette_has_requested_low_mid_high_colors() -> None:
+    cmap = matplotlib.colormaps[PHIPML_PREVALENCE_CMAP_NAME]
+
+    assert matplotlib.colors.to_hex(cmap(0.0)).upper() == "#B23A35"
+    assert matplotlib.colors.to_hex(cmap(0.5)).upper() == "#F2E6A2"
+    assert matplotlib.colors.to_hex(cmap(1.0)).upper() == "#6B8E23"
+
+
+def test_binary_shap_uses_discrete_legend_and_continuous_shap_uses_colorbar() -> None:
+    samples = [f"S{index}" for index in range(8)]
+    shap_values = np.linspace(-0.4, 0.4, 16).reshape(8, 2)
+    binary_features = pd.DataFrame(
+        {
+            "agilent_a": [0, 1] * 4,
+            "twist_b": [1, 0] * 4,
+        },
+        index=samples,
+    )
+    binary_figure, binary_axis = plot_shap_values(
+        shap_values,
+        binary_features,
+        add_group_labels=False,
+        add_binary_legend=None,
+        sort=False,
+    )
+    assert len(binary_figure.axes) == 1
+    assert binary_axis.get_legend() is not None
+    assert [text.get_text() for text in binary_axis.get_legend().get_texts()] == [
+        "0",
+        "1",
+    ]
+
+    mixed_features = binary_features.assign(Age=np.linspace(40, 70, 8))
+    mixed_shap = np.column_stack([shap_values, np.linspace(-0.2, 0.2, 8)])
+    mixed_figure, mixed_axis = plot_shap_values(
+        mixed_shap,
+        mixed_features,
+        add_group_labels=False,
+        add_binary_legend=None,
+        sort=False,
+    )
+    assert mixed_axis.get_legend() is None
+    assert len(mixed_figure.axes) == 2
+
+
+def test_shap_heatmap_marks_class_ranges_and_boundary() -> None:
+    samples = ["S0", "S1", "S2", "S3"]
+    shap_values = pd.DataFrame(
+        {
+            "agilent_a": [-0.4, -0.2, 0.2, 0.4],
+            "Age": [0.1, -0.1, 0.3, -0.3],
+        },
+        index=samples,
+    )
+    target = pd.Series([0, 0, 1, 1], index=samples)
+
+    _, axis = plot_shap_heatmap(
+        shap_values,
+        target=target,
+        class_labels=("Control", "Case"),
+    )
+
+    boundary_lines = [
+        line
+        for line in axis.lines
+        if np.allclose(np.asarray(line.get_ydata(), dtype=float), [2.0, 2.0])
+    ]
+    assert boundary_lines and boundary_lines[0].get_linewidth() == pytest.approx(2.2)
+    assert {text.get_text() for text in axis.texts} >= {"Control (0)", "Case (1)"}
+    heatmap_cmap = axis.collections[0].cmap
+    assert matplotlib.colors.to_hex(heatmap_cmap(0.0)).upper() == "#5E3C99"
+    assert np.allclose(
+        heatmap_cmap(0.5)[:3],
+        matplotlib.colors.to_rgb("#F7F7F7"),
+        atol=0.01,
+    )
+    assert matplotlib.colors.to_hex(heatmap_cmap(1.0)).upper() == "#E66101"
+    assert PHIPML_SHAP_HEATMAP_CMAP_NAME != PHIPML_SHAP_CMAP_NAME
 
 
 def test_feature_table_is_compact_unless_extra_columns_are_requested() -> None:
@@ -267,8 +379,7 @@ def test_feature_table_is_compact_unless_extra_columns_are_requested() -> None:
         group_labels=("Control", "Case"),
     )
     compact_headers = {
-        compact_axis.tables[0][0, column].get_text().get_text()
-        for column in range(5)
+        compact_axis.tables[0][0, column].get_text().get_text() for column in range(5)
     }
     assert compact_headers == {
         "Feature",
@@ -284,8 +395,7 @@ def test_feature_table_is_compact_unless_extra_columns_are_requested() -> None:
         extra_columns=("Feature type", "Top-k SHAP frequency (%)"),
     )
     detailed_headers = {
-        detailed_axis.tables[0][0, column].get_text().get_text()
-        for column in range(7)
+        detailed_axis.tables[0][0, column].get_text().get_text() for column in range(7)
     }
     assert "Feature type" in detailed_headers
     assert "Top-k SHAP frequency (%)" in detailed_headers
@@ -383,12 +493,11 @@ def test_top_k_frequency_ranking_prefers_consistency_over_one_large_run(
     ranking = rank_features_by_top_k_shap(results, top_k=2).set_index("Feature")
 
     assert ranking.loc["stable", "Top-k SHAP frequency (%)"] == pytest.approx(100)
-    assert ranking.loc["spike", "Top-k SHAP frequency (%)"] == pytest.approx(
-        100 / 3
+    assert ranking.loc["spike", "Top-k SHAP frequency (%)"] == pytest.approx(100 / 3)
+    assert (
+        ranking.loc["spike", "Ranking mean |SHAP|"]
+        > ranking.loc["stable", "Ranking mean |SHAP|"]
     )
-    assert ranking.loc["spike", "Ranking mean |SHAP|"] > ranking.loc[
-        "stable", "Ranking mean |SHAP|"
-    ]
     assert ranking.loc["stable", "Top-k frequency rank"] == 1
 
     output = plot_result_files(
@@ -536,9 +645,16 @@ def test_metric_matrix_supports_repeats_and_native_validation_ci(
     single_run = build_metric_matrix(records.iloc[[0, 2]], metric="roc.auc")
     assert single_run.standard_deviation.loc["A", "A"] == pytest.approx(0.05)
     output = tmp_path / "heatmap.pdf"
-    figure, _ = plot_metric_heatmap(summary, output_path=output)
+    figure, axis = plot_metric_heatmap(summary, output_path=output)
     assert output.is_file() and output.stat().st_size > 0
     assert figure.axes
+    assert axis.collections[0].cmap.name == "inferno"
+    assert (
+        parse_args_metric_heatmap(
+            ["--manifest", "input.csv", "--output", "plot.pdf"]
+        ).palette
+        == "inferno"
+    )
 
 
 def test_plot_and_heatmap_cli_create_outputs(tmp_path: Path) -> None:

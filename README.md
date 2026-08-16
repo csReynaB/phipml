@@ -502,9 +502,24 @@ and explicit CLI arguments override its values:
 phipml-plot --plot-config configs/config_plotting.yaml
 ```
 
-SHAP beeswarm dots retain their standard feature-value coloring, controlled by
-`shap_cmap`/`--shap-cmap`. `class_colors`/`--class-colors` affects only the two
-prediction-direction labels above the beeswarm.
+SHAP beeswarm dots use the muted `phipml_blue_gray_red` feature-value scale by
+default (`#6699CC` through a light gray/lilac midpoint to `#CC6677`). When all
+displayed features are binary, the continuous colorbar is replaced
+automatically by a discrete 0/1 legend. If at least one displayed feature is
+continuous, the continuous colorbar is retained. `shap_cmap`/`--shap-cmap`
+overrides the scale; `class_colors`/`--class-colors` affects only the two
+prediction-direction labels above the beeswarm. Signed SHAP heatmaps use a
+separate `phipml_purple_gray_orange` diverging scale: negative contributions
+are purple, zero is near-white, and positive contributions are orange. This
+keeps SHAP contribution direction visually distinct from feature value. When
+targets are available, heatmaps also draw labelled class-range brackets and a
+strong separator between classes.
+
+Confusion matrices display the positive class (1) first on both axes, followed
+by the negative class (0). Figure annotations use two decimal places by
+default. Feature-table prevalence cells use the `phipml_prevalence` scale
+(muted red at 0%, pale yellow at 50%, olive green at 100%); continuous clinical
+summaries remain uncolored.
 
 `--ranking-top-k` determines how many features count as top-ranked in each
 run; `--max-display` independently controls how many of the frequency-ranked
@@ -581,7 +596,8 @@ otherwise it writes to a `plots/` directory beside the first result file.
 
 `phipml-heatmap` uses a tidy CSV/TSV manifest rather than inferring cohorts from
 filenames. Required columns are `training`, `validation`, and `path`; `split`
-is optional:
+is optional. The default palette is `inferno`, with annotation text selected
+for contrast against each cell; override it with `--palette` when needed:
 
 ```text
 training,validation,path,split

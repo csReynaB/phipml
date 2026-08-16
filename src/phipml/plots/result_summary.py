@@ -26,6 +26,9 @@ import pandas as pd
 from phipml.classification.helpers import bootstrap_classification_metrics
 from phipml.io.data_handler import Config, MetadataHandler, OligosHandler
 from phipml.plots.helpers import (
+    PHIPML_PREVALENCE_CMAP_NAME,
+    PHIPML_SHAP_CMAP_NAME,
+    PHIPML_SHAP_HEATMAP_CMAP_NAME,
     build_feature_importance_table,
     plot_classification_metric_bars,
     plot_confusion_matrix_metrics,
@@ -67,15 +70,15 @@ DEFAULT_PLOT_COLORS = {
     "pr_band": "#DDBEA9",
     "confusion_cmap": "Blues",
     "classification": "#52796F",
-    "shap_cmap": "viridis",
-    "shap_heatmap_cmap": "coolwarm",
+    "shap_cmap": PHIPML_SHAP_CMAP_NAME,
+    "shap_heatmap_cmap": PHIPML_SHAP_HEATMAP_CMAP_NAME,
     "shap_importance": "#6D597A",
     "negative_class": "black",
     "positive_class": "black",
     "table_header": "#D9D9D9",
     "table_row_odd": "#F6F6F6",
     "table_row_even": "white",
-    "table_prevalence_cmap": "YlGn",
+    "table_prevalence_cmap": PHIPML_PREVALENCE_CMAP_NAME,
 }
 
 logger = logging.getLogger(__name__)
@@ -587,11 +590,7 @@ def rank_features_by_top_k_shap(
     rank_sum = pd.Series(0.0, index=all_features, dtype=float)
 
     for importance in run_importances:
-        ranked = (
-            importance.rename("importance")
-            .rename_axis("Feature")
-            .reset_index()
-        )
+        ranked = importance.rename("importance").rename_axis("Feature").reset_index()
         ranked = ranked[
             np.isfinite(ranked["importance"]) & ranked["importance"].gt(0.0)
         ]
@@ -648,8 +647,7 @@ def _features_for_display(
     """Resolve the requested ranking and return an ordered display subset."""
     if feature_ranking not in {"auto", "top-k-frequency", "mean-abs-shap"}:
         raise ValueError(
-            "feature_ranking must be 'auto', 'top-k-frequency', or "
-            "'mean-abs-shap'"
+            "feature_ranking must be 'auto', 'top-k-frequency', or " "'mean-abs-shap'"
         )
     if max_display < 1:
         raise ValueError("max_display must be at least 1")
@@ -664,8 +662,7 @@ def _features_for_display(
     ].copy()
     if eligible_ranking.empty:
         raise ValueError(
-            "No features satisfy min_top_k_frequency="
-            f"{min_top_k_frequency:g}%"
+            "No features satisfy min_top_k_frequency=" f"{min_top_k_frequency:g}%"
         )
 
     resolved_method = (
@@ -930,9 +927,7 @@ def reconstruct_plot_data(
 
     library_metadata = None
     if analysis_config.lib_metadata_input is not None:
-        library_metadata = OligosHandler(
-            analysis_config
-        ).get_oligos_metadata_df()
+        library_metadata = OligosHandler(analysis_config).get_oligos_metadata_df()
     return features, target, library_metadata
 
 
@@ -1179,12 +1174,8 @@ def plot_result_files(
         )
 
     needs_shap = bool(
-        requested_plot_set
-        & {"shap-beeswarm", "shap-importance", "shap-heatmap"}
-    ) or (
-        "feature-table" in requested_plot_set
-        and feature_importance_table is None
-    )
+        requested_plot_set & {"shap-beeswarm", "shap-importance", "shap-heatmap"}
+    ) or ("feature-table" in requested_plot_set and feature_importance_table is None)
     shap_summary = (
         aggregate_shap_summary(results, alignment=shap_alignment)
         if needs_shap
@@ -1245,6 +1236,7 @@ def plot_result_files(
             shap_heatmap_figure, _ = plot_shap_heatmap(
                 shap_values,
                 target=target,
+                class_labels=class_labels,
                 feature_order=display_features,
                 max_display=max_display,
                 cmap=colors["shap_heatmap_cmap"],
@@ -1272,7 +1264,7 @@ def plot_result_files(
                         colors["positive_class"],
                     ],
                     filename_label=output_prefix,
-                    add_binary_legend=False,
+                    add_binary_legend=None,
                     save_fig=False,
                     sort=False,
                 )
@@ -1371,9 +1363,7 @@ def plot_result_files(
             displayed_table = feature_table.head(max_display).copy()
         elif display_features:
             displayed_table = (
-                feature_table.set_index("Feature")
-                .loc[display_features]
-                .reset_index()
+                feature_table.set_index("Feature").loc[display_features].reset_index()
             )
         else:
             displayed_table = feature_table.head(max_display).copy()

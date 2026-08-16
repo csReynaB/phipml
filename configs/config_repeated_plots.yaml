@@ -24,8 +24,8 @@ plotting:
     pr_band: "#DDBEA9"
     confusion_cmap: Blues
     classification: "#52796F"
-    shap_cmap: viridis
-    shap_heatmap_cmap: coolwarm
+    shap_cmap: phipml_blue_gray_red
+    shap_heatmap_cmap: phipml_purple_gray_orange
     shap_importance: "#6D597A"
 
   feature_table:
@@ -33,4 +33,4 @@ plotting:
     title: Repeated-run top features
     header_color: "#D9D9D9"
     row_colors: ["#F6F6F6", white]
-    prevalence_cmap: YlGn
+    prevalence_cmap: phipml_prevalence

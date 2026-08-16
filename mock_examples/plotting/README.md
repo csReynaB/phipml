@@ -58,8 +58,11 @@ phipml-plot --plot-config \
 ```
 
 The plotting YAML demonstrates result globs, all-plot generation, PDF/SVG/PNG
-output, colors, repeated top-K frequency ranking, and compact-table styling.
-Any explicit CLI option overrides the corresponding YAML value.
+output, separate feature-value and signed-SHAP scales, the prevalence scale,
+repeated top-K frequency ranking, and compact-table styling. Binary-only
+beeswarms receive a discrete 0/1 legend; mixed or continuous feature sets
+receive a continuous colorbar. Any explicit CLI option overrides the
+corresponding YAML value.
 
 Create and plot an independent external-validation result:
 
@@ -91,7 +94,8 @@ phipml-heatmap \
 ```
 
 Use `--metric pr.ap`, `classification.balanced_accuracy`, or another saved
-scalar metric to summarize a different quantity.
+scalar metric to summarize a different quantity. The default heatmap palette
+is `inferno`; pass `--palette <matplotlib-name>` to override it.
 
 ## Expected plotting outputs
 

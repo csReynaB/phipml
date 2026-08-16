@@ -20,7 +20,7 @@ import seaborn as sns
 import shap
 from matplotlib import colormaps
 from matplotlib.axes import Axes
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import Colormap, LinearSegmentedColormap
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 from scipy.stats import chi2_contingency, fisher_exact, kruskal, mannwhitneyu
@@ -43,6 +43,53 @@ plt.rcParams["ytick.color"] = "black"
 plt.rcParams["axes.titlecolor"] = "black"
 
 logger = logging.getLogger(__name__)
+
+
+# Muted, colorblind-considerate defaults used by the modern plotting API.
+# Registering them also makes these names valid in YAML plotting configs.
+PHIPML_SHAP_CMAP_NAME = "phipml_blue_gray_red"
+PHIPML_SHAP_HEATMAP_CMAP_NAME = "phipml_purple_gray_orange"
+PHIPML_PREVALENCE_CMAP_NAME = "phipml_prevalence"
+
+_PHIPML_SHAP_CMAP = LinearSegmentedColormap.from_list(
+    PHIPML_SHAP_CMAP_NAME,
+    ["#6699CC", "#E7E1EA", "#CC6677"],
+    N=257,
+)
+_PHIPML_SHAP_HEATMAP_CMAP = LinearSegmentedColormap.from_list(
+    PHIPML_SHAP_HEATMAP_CMAP_NAME,
+    ["#5E3C99", "#F7F7F7", "#E66101"],
+    N=257,
+)
+_PHIPML_PREVALENCE_CMAP = LinearSegmentedColormap.from_list(
+    PHIPML_PREVALENCE_CMAP_NAME,
+    ["#B23A35", "#F2E6A2", "#6B8E23"],
+    N=257,
+)
+for _custom_cmap in (
+    _PHIPML_SHAP_CMAP,
+    _PHIPML_SHAP_HEATMAP_CMAP,
+    _PHIPML_PREVALENCE_CMAP,
+):
+    if _custom_cmap.name not in colormaps:
+        colormaps.register(_custom_cmap)
+
+
+def _resolve_colormap(cmap: str | Colormap) -> Colormap:
+    """Resolve a Matplotlib colormap name or return a colormap object."""
+    return colormaps[cmap] if isinstance(cmap, str) else cmap
+
+
+def _is_binary_feature_frame(features: pd.DataFrame) -> bool:
+    """Return whether every displayed feature contains only numeric 0/1."""
+    if features.empty or features.shape[1] == 0:
+        return False
+    for column in features.columns:
+        observed = features[column].dropna()
+        numeric = pd.to_numeric(observed, errors="coerce")
+        if numeric.isna().any() or not bool(numeric.isin([0, 1]).all()):
+            return False
+    return True
 
 
 def format_pval(p, alpha=0.05):
@@ -660,7 +707,7 @@ def plot_shap_values(
     values: np.ndarray,
     features: pd.DataFrame,
     ax: Optional[Axes] = None,
-    cmap: Union[str, LinearSegmentedColormap] = "viridis",
+    cmap: str | Colormap = PHIPML_SHAP_CMAP_NAME,
     max_display: int = 30,
     group_tests: Optional[List[str]] = None,
     group_label_colors: Optional[Sequence[str]] = None,
@@ -673,7 +720,7 @@ def plot_shap_values(
     legend_title: str = "Feature\nvalue",
     legend_labels: Optional[List[str]] = None,
     add_group_labels: bool = True,
-    add_binary_legend: bool = True,
+    add_binary_legend: bool | None = None,
     save_fig: bool = False,
     figures_dir: Union[str, Path] = "./",
     **shap_kwargs,
@@ -715,6 +762,13 @@ def plot_shap_values(
         plt.figure(fig.number)
         plt.sca(ax)
 
+    resolved_cmap = _resolve_colormap(cmap)
+    use_binary_legend = (
+        _is_binary_feature_frame(features)
+        if add_binary_legend is None
+        else add_binary_legend
+    )
+
     # -------------------------
     # SHAP summary plot
     # -------------------------
@@ -722,7 +776,7 @@ def plot_shap_values(
         values,
         features=features,
         plot_type="dot",
-        cmap=cmap,
+        cmap=resolved_cmap,
         max_display=max_display,
         plot_size=[figure_size[0], figure_size[1]],
         show=False,
@@ -825,7 +879,7 @@ def plot_shap_values(
     # -------------------------
     # Binary legend (right side)
     # -------------------------
-    if add_binary_legend:
+    if use_binary_legend:
 
         # Remove SHAP colorbar axis
         for a in fig.axes:
@@ -836,8 +890,8 @@ def plot_shap_values(
             legend_labels = ["0", "1"]
 
         handles = [
-            Patch(facecolor=plt.get_cmap(cmap)(0.0), label=legend_labels[0]),
-            Patch(facecolor=plt.get_cmap(cmap)(1.0), label=legend_labels[1]),
+            Patch(facecolor=resolved_cmap(0.0), label=legend_labels[0]),
+            Patch(facecolor=resolved_cmap(1.0), label=legend_labels[1]),
         ]
         legend = ax.legend(
             handles=handles,
@@ -854,11 +908,21 @@ def plot_shap_values(
     else:
         if legend_labels is None:
             legend_labels = ["Low", "High"]
-        cbar = fig.axes[-1]
-        cbar.set_yticklabels(
-            legend_labels, color="black", fontsize=fontsize["colorbar"]
-        )
-        cbar.set_ylabel(legend_title, fontsize=fontsize["legend"], color="black")
+        colorbar_axes = [
+            figure_axis for figure_axis in fig.axes if figure_axis is not ax
+        ]
+        if colorbar_axes:
+            cbar = colorbar_axes[-1]
+            cbar.set_yticklabels(
+                legend_labels,
+                color="black",
+                fontsize=fontsize["colorbar"],
+            )
+            cbar.set_ylabel(
+                legend_title,
+                fontsize=fontsize["legend"],
+                color="black",
+            )
 
     # -------------------------
     # Save
@@ -984,13 +1048,13 @@ def plot_roc_metrics(
     auc_std = _first_metric_value(roc_metrics, ("auc_std", "boot_auc_std"))
     if auc_ci_low is not None and auc_ci_high is not None:
         curve_label = (
-            f"AUC = {auc_value:.3f} "
-            f"[{float(auc_ci_low):.3f}–{float(auc_ci_high):.3f}]"
+            f"AUC = {auc_value:.2f} "
+            f"[{float(auc_ci_low):.2f}–{float(auc_ci_high):.2f}]"
         )
     elif auc_std is not None:
-        curve_label = f"Mean AUC = {auc_value:.3f} ± {float(auc_std):.3f}"
+        curve_label = f"Mean AUC = {auc_value:.2f} ± {float(auc_std):.2f}"
     else:
-        curve_label = f"AUC = {auc_value:.3f}"
+        curve_label = f"AUC = {auc_value:.2f}"
 
     ax.plot(fpr, tpr, color=color, linewidth=2.4, label=curve_label)
     lower_value = _first_metric_value(
@@ -1063,12 +1127,12 @@ def plot_precision_recall_metrics(
     ap_std = _first_metric_value(pr_metrics, ("ap_std",))
     if ap_ci_low is not None and ap_ci_high is not None:
         curve_label = (
-            f"AP = {ap_value:.3f} " f"[{float(ap_ci_low):.3f}–{float(ap_ci_high):.3f}]"
+            f"AP = {ap_value:.2f} " f"[{float(ap_ci_low):.2f}–{float(ap_ci_high):.2f}]"
         )
     elif ap_std is not None:
-        curve_label = f"Mean AP = {ap_value:.3f} ± {float(ap_std):.3f}"
+        curve_label = f"Mean AP = {ap_value:.2f} ± {float(ap_std):.2f}"
     else:
-        curve_label = f"AP = {ap_value:.3f}"
+        curve_label = f"AP = {ap_value:.2f}"
 
     ax.plot(recall, precision, color=color, linewidth=2.4, label=curve_label)
     lower_value = _first_metric_value(
@@ -1104,7 +1168,7 @@ def plot_precision_recall_metrics(
             linestyle="--",
             color="#666666",
             linewidth=1.2,
-            label=f"Baseline = {positive_prevalence:.3f}",
+            label=f"Baseline = {positive_prevalence:.2f}",
         )
     ax.set(
         xlim=(0.0, 1.0),
@@ -1152,6 +1216,11 @@ def plot_confusion_matrix_metrics(
     if len(class_labels) != 2:
         raise ValueError("class_labels must contain exactly two labels")
     matrix = confusion_matrix_from_metrics(classification_metrics)
+    # Show positive (1) before negative (0) on both axes. The displayed
+    # matrix is therefore [[TP, FN], [FP, TN]]; saved counts are unchanged.
+    display_order = np.asarray([1, 0])
+    matrix = matrix[np.ix_(display_order, display_order)]
+    display_labels = [str(class_labels[1]), str(class_labels[0])]
     row_totals = matrix.sum(axis=1, keepdims=True)
     proportions = np.divide(
         matrix,
@@ -1182,8 +1251,8 @@ def plot_confusion_matrix_metrics(
         cbar=False,
         linewidths=1.0,
         linecolor="white",
-        xticklabels=class_labels,
-        yticklabels=class_labels,
+        xticklabels=display_labels,
+        yticklabels=display_labels,
         ax=ax,
     )
     # Add annotations explicitly instead of relying on seaborn's object-array
@@ -1335,11 +1404,14 @@ def plot_classification_metric_bars(
     ax.set_title(title)
     ax.grid(axis="x", alpha=0.2)
     for bar, value in zip(bars, values):
+        # Raise the label above the horizontal error bar instead of placing
+        # both at the bar centre.
+        label_y = bar.get_y() + bar.get_height() / 2 - 0.18
         ax.text(
             max(float(value), 0.0) + 0.02,
-            bar.get_y() + bar.get_height() / 2,
-            f"{value:.3f}",
-            va="center",
+            label_y,
+            f"{value:.2f}",
+            va="bottom",
             fontsize=9,
         )
     return fig, ax
@@ -1458,11 +1530,12 @@ def plot_shap_heatmap(
     shap_values: pd.DataFrame,
     *,
     target: pd.Series | None = None,
+    class_labels: Sequence[str] = ("Negative", "Positive"),
     feature_order: Sequence[str] | None = None,
     max_display: int = 20,
     ax: Axes | None = None,
     title: str = "Signed SHAP values across samples",
-    cmap: str = "coolwarm",
+    cmap: str | Colormap = PHIPML_SHAP_HEATMAP_CMAP_NAME,
     output_path: str | Path | None = None,
 ) -> tuple[Figure, Axes]:
     """Plot signed SHAP values for top features, optionally grouping samples."""
@@ -1487,15 +1560,31 @@ def plot_shap_heatmap(
         if not ordered:
             raise ValueError("feature_order cannot be empty")
         top_features = pd.Index(ordered[:max_display])
+    if len(class_labels) != 2:
+        raise ValueError("class_labels must contain exactly two labels")
     display = shap_values.loc[:, top_features]
+    ordered_target: pd.Series | None = None
     if target is not None:
         missing = display.index.difference(target.index)
         if len(missing):
             raise ValueError(f"Target is missing SHAP samples: {missing.tolist()[:5]}")
+        aligned_target = target.loc[display.index]
+        numeric_target = pd.to_numeric(aligned_target, errors="coerce")
+        class_order = pd.Series(np.nan, index=aligned_target.index, dtype=float)
+        for class_code, class_label in enumerate(class_labels):
+            class_order.loc[
+                aligned_target.eq(class_label) | numeric_target.eq(class_code)
+            ] = class_code
+        if class_order.isna().any():
+            unknown = aligned_target.loc[class_order.isna()].unique().tolist()[:5]
+            raise ValueError(
+                "Target values could not be matched to class_labels or 0/1 codes: "
+                f"{unknown}"
+            )
         ordering = (
             pd.DataFrame(
                 {
-                    "target": target.loc[display.index],
+                    "target": class_order,
                     "position": np.arange(len(display)),
                 },
                 index=display.index,
@@ -1504,6 +1593,7 @@ def plot_shap_heatmap(
             .index
         )
         display = display.loc[ordering]
+        ordered_target = class_order.loc[ordering].astype(int)
 
     if ax is None:
         width = max(7.0, 0.42 * display.shape[1] + 3.0)
@@ -1516,7 +1606,7 @@ def plot_shap_heatmap(
         absolute_limit = 1.0
     sns.heatmap(
         display,
-        cmap=cmap,
+        cmap=_resolve_colormap(cmap),
         center=0.0,
         vmin=-absolute_limit,
         vmax=absolute_limit,
@@ -1530,6 +1620,57 @@ def plot_shap_heatmap(
     ax.tick_params(axis="x", rotation=45)
     for label in ax.get_xticklabels():
         label.set_ha("right")
+    if ordered_target is not None:
+        class_codes = ordered_target.to_numpy(dtype=int)
+        boundaries = np.flatnonzero(class_codes[1:] != class_codes[:-1]) + 1
+        for boundary in boundaries:
+            ax.axhline(boundary, color="#252525", linewidth=2.2)
+
+        starts = np.r_[0, boundaries]
+        ends = np.r_[boundaries, len(class_codes)]
+        transform = ax.get_yaxis_transform()
+        bracket_x = -0.025
+        cap_x = -0.012
+        for start, end in zip(starts, ends):
+            code = int(class_codes[start])
+            y_start = float(start) + 0.08
+            y_end = float(end) - 0.08
+            ax.plot(
+                [bracket_x, bracket_x],
+                [y_start, y_end],
+                color="#252525",
+                linewidth=1.8,
+                transform=transform,
+                clip_on=False,
+            )
+            ax.plot(
+                [bracket_x, cap_x],
+                [y_start, y_start],
+                color="#252525",
+                linewidth=1.8,
+                transform=transform,
+                clip_on=False,
+            )
+            ax.plot(
+                [bracket_x, cap_x],
+                [y_end, y_end],
+                color="#252525",
+                linewidth=1.8,
+                transform=transform,
+                clip_on=False,
+            )
+            ax.text(
+                bracket_x - 0.018,
+                (float(start) + float(end)) / 2.0,
+                f"{class_labels[code]} ({code})",
+                rotation=90,
+                ha="center",
+                va="center",
+                fontsize=9,
+                transform=transform,
+                clip_on=False,
+            )
+        ax.set_ylabel("Samples grouped by class", labelpad=48)
     _save_optional_figure(fig, output_path)
     return fig, ax
 
@@ -1684,7 +1825,7 @@ def plot_feature_importance_table(
     title: str = "Top features by mean absolute SHAP value",
     header_color: str = "#D9D9D9",
     row_colors: Sequence[str] = ("#F6F6F6", "white"),
-    prevalence_cmap: str = "YlGn",
+    prevalence_cmap: str | Colormap = PHIPML_PREVALENCE_CMAP_NAME,
     output_path: str | Path | None = None,
 ) -> tuple[Figure, Axes]:
     """Render a compact top-feature table with prevalence-only cell coloring.
@@ -1752,7 +1893,7 @@ def plot_feature_importance_table(
         if pd.api.types.is_numeric_dtype(source_display[column])
     ]
     for column in (*labels, *numeric_extra_columns, "Mean |SHAP|"):
-        display[column] = pd.to_numeric(display[column], errors="coerce").round(3)
+        display[column] = pd.to_numeric(display[column], errors="coerce").round(2)
 
     height = max(3.2, 0.42 * len(display) + 1.4)
     fig, ax = plt.subplots(
@@ -1785,6 +1926,7 @@ def plot_feature_importance_table(
     table_artist.set_fontsize(8.5)
     prevalence_rows = source_display["Statistic"].eq("Prevalence (%)").to_numpy()
     group_column_indices = [display.columns.get_loc(label) for label in labels]
+    resolved_prevalence_cmap = _resolve_colormap(prevalence_cmap)
     for (row, column), cell in table_artist.get_celld().items():
         cell.set_edgecolor("white")
         if row == 0:
@@ -1795,9 +1937,14 @@ def plot_feature_importance_table(
         if column in group_column_indices and prevalence_rows[row - 1]:
             raw_value = display.iloc[row - 1, column]
             if raw_value != "" and pd.notna(raw_value):
-                cell.set_facecolor(
-                    colormaps[prevalence_cmap](float(raw_value) / 100.0)
+                cell_color = resolved_prevalence_cmap(float(raw_value) / 100.0)
+                cell.set_facecolor(cell_color)
+                luminance = (
+                    0.2126 * cell_color[0]
+                    + 0.7152 * cell_color[1]
+                    + 0.0722 * cell_color[2]
                 )
+                cell.set_text_props(color="white" if luminance < 0.43 else "black")
         if column <= len(annotations):
             cell.set_text_props(ha="left")
             cell.PAD = 0.02

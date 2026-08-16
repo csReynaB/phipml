@@ -40,7 +40,7 @@ def parse_args_metric_heatmap(argv: list[str] | None = None) -> argparse.Namespa
         help="Optional order of validation-cohort rows",
     )
     parser.add_argument("--title", default=None)
-    parser.add_argument("--palette", default="YlGnBu")
+    parser.add_argument("--palette", default="inferno")
     parser.add_argument("--vmin", type=float, default=0.5)
     parser.add_argument("--vmax", type=float, default=1.0)
     parser.add_argument("--output", required=True)

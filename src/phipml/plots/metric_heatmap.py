@@ -137,9 +137,7 @@ def build_metric_matrix(
     if not observations:
         raise ValueError("Metric manifest contains no result files")
 
-    observed_training = list(
-        dict.fromkeys(training for training, _ in observations)
-    )
+    observed_training = list(dict.fromkeys(training for training, _ in observations))
     observed_validation = list(
         dict.fromkeys(validation for _, validation in observations)
     )
@@ -203,7 +201,7 @@ def plot_metric_heatmap(
     summary: MetricMatrixSummary,
     *,
     title: str | None = None,
-    palette: str = "YlGnBu",
+    palette: str = "inferno",
     vmin: float = 0.5,
     vmax: float = 1.0,
     annotate_uncertainty: bool = True,
@@ -211,6 +209,8 @@ def plot_metric_heatmap(
     output_path: str | Path | None = None,
 ) -> tuple[plt.Figure, plt.Axes]:
     """Plot a metric matrix with mean ± SD or native-CI annotations."""
+    if not vmin < vmax:
+        raise ValueError("vmin must be smaller than vmax")
     width = max(4.8, 1.25 * len(summary.mean.columns) + 2.5)
     height = max(4.2, 1.05 * len(summary.mean.index) + 2.4)
     fig, ax = plt.subplots(figsize=figsize or (width, height))
@@ -232,7 +232,6 @@ def plot_metric_heatmap(
         cbar_kws={"label": label, "shrink": 0.8},
         annot=False,
     )
-    midpoint = (vmin + vmax) / 2.0
     for row, validation in enumerate(summary.mean.index):
         for column, training in enumerate(summary.mean.columns):
             value = summary.mean.loc[validation, training]
@@ -250,6 +249,11 @@ def plot_metric_heatmap(
                     annotation += f"\n±{sd:.2f}\n(outer-fold SD)"
             elif annotate_uncertainty and np.isfinite(low) and np.isfinite(high):
                 annotation += f"\n95% CI [{low:.2f}, {high:.2f}]"
+            normalized = np.clip((float(value) - vmin) / (vmax - vmin), 0.0, 1.0)
+            cell_color = cmap(normalized)
+            luminance = (
+                0.2126 * cell_color[0] + 0.7152 * cell_color[1] + 0.0722 * cell_color[2]
+            )
             ax.text(
                 column + 0.5,
                 row + 0.5,
@@ -257,7 +261,7 @@ def plot_metric_heatmap(
                 ha="center",
                 va="center",
                 fontsize=9,
-                color="white" if value > midpoint else "black",
+                color="black" if luminance > 0.55 else "white",
             )
     ax.set_xlabel("Training cohort")
     ax.set_ylabel("Validation cohort")

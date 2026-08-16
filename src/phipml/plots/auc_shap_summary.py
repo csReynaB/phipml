@@ -868,6 +868,7 @@ def plot_result_files(
         shap_heatmap_figure, _ = plot_shap_heatmap(
             shap_values,
             target=target,
+            class_labels=class_labels,
             max_display=max_display,
             output_path=shap_heatmap_file,
         )
@@ -888,7 +889,7 @@ def plot_result_files(
                 max_display=max_display,
                 group_tests=list(class_labels),
                 filename_label=output_prefix,
-                add_binary_legend=False,
+                add_binary_legend=None,
                 save_fig=output_path is not None,
                 figures_dir=output_path or ".",
             )

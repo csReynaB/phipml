@@ -90,7 +90,8 @@ After the standard nested and external results exist, create a metric heatmap:
 phipml-heatmap \
   --manifest mock_examples/plotting/metric_manifest.csv \
   --metric roc.auc \
-  --output mock_examples/plotting/output/roc_auc_heatmap.pdf
+  --formats pdf svg png \
+  --output mock_examples/plotting/output/roc_auc_heatmap
 ```
 
 Use `--metric pr.ap`, `classification.balanced_accuracy`, or another saved
@@ -111,7 +112,7 @@ Each `phipml-plot` invocation can produce:
 
 All available plots and PDF/SVG/PNG output are enabled by default. Use
 `--plots` and `--formats` (or the equivalent plotting-YAML keys) to request a
-smaller subset.
+smaller subset. `phipml-heatmap` follows the same three-format default.
 
 The compact feature-table figure omits audit columns by default, while the
 generated CSV retains them. Use `--table-extra-columns`, or

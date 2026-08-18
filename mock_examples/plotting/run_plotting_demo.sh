@@ -23,6 +23,7 @@ phipml-plot \
   --library-metadata "$EXAMPLES_DIR/peptide_library_metadata.csv" \
   --library-id-column peptide_id \
   --table-annotation-columns Description Species Protein \
+  --formats pdf svg png \
   --output-dir "$OUTPUT_DIR/nested_single" \
   --output-prefix noisy_nested
 
@@ -34,12 +35,14 @@ phipml-plot \
   --library-metadata "$EXAMPLES_DIR/peptide_library_metadata.csv" \
   --library-id-column peptide_id \
   --table-annotation-columns Description Species Protein \
+  --formats pdf svg png \
   --output-dir "$OUTPUT_DIR/external_validation" \
   --output-prefix noisy_external
 
 phipml-heatmap \
   --manifest "$SCRIPT_DIR/metric_manifest.csv" \
   --metric roc.auc \
-  --output "$OUTPUT_DIR/roc_auc_heatmap.pdf"
+  --formats pdf svg png \
+  --output "$OUTPUT_DIR/roc_auc_heatmap"
 
 printf 'Plotting demonstration completed: %s\n' "$OUTPUT_DIR"

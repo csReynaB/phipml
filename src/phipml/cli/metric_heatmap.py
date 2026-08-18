@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from phipml.plots.metric_heatmap import build_metric_matrix, plot_metric_heatmap
+from phipml.plots.result_summary import DEFAULT_OUTPUT_FORMATS
 
 
 def parse_args_metric_heatmap(argv: list[str] | None = None) -> argparse.Namespace:
@@ -43,7 +44,22 @@ def parse_args_metric_heatmap(argv: list[str] | None = None) -> argparse.Namespa
     parser.add_argument("--palette", default="inferno")
     parser.add_argument("--vmin", type=float, default=0.5)
     parser.add_argument("--vmax", type=float, default=1.0)
-    parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--output",
+        required=True,
+        help=(
+            "Output filename stem. A trailing .pdf, .svg, or .png is accepted "
+            "and replaced for each requested format."
+        ),
+    )
+    parser.add_argument(
+        "--formats",
+        nargs="+",
+        choices=("pdf", "svg", "png"),
+        default=list(DEFAULT_OUTPUT_FORMATS),
+        help="Figure formats; defaults to PDF, SVG, and PNG",
+    )
+    parser.add_argument("--dpi", type=int, default=600)
     parser.add_argument(
         "--annotate-uncertainty",
         action=argparse.BooleanOptionalAction,
@@ -88,6 +104,8 @@ def main(argv: list[str] | None = None) -> int:
         vmax=args.vmax,
         annotate_uncertainty=args.annotate_uncertainty,
         output_path=args.output,
+        output_formats=args.formats,
+        dpi=args.dpi,
     )
     return 0
 

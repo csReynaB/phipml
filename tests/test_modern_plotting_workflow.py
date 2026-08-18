@@ -695,6 +695,8 @@ def test_plot_and_heatmap_cli_create_outputs(tmp_path: Path) -> None:
     assert (output_dir / "demo_performance.svg").is_file()
     assert (output_dir / "demo_performance.png").is_file()
     assert (output_dir / "demo_roc.pdf").is_file()
+    for output_format in ("pdf", "svg", "png"):
+        assert (output_dir / f"demo_confusion.{output_format}").is_file()
 
     manifest = tmp_path / "manifest.csv"
     pd.DataFrame(
@@ -720,6 +722,20 @@ def test_plot_and_heatmap_cli_create_outputs(tmp_path: Path) -> None:
         == 0
     )
     assert heatmap.is_file() and heatmap.stat().st_size > 0
+    assert heatmap.with_suffix(".svg").is_file()
+    assert heatmap.with_suffix(".png").is_file()
+
+
+def test_plot_cli_help_renders_literal_percentage_column_names(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        plot_main(["--help"])
+
+    assert error.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "Top-k SHAP frequency (%)" in help_text
+    assert "Selection frequency (%)" in help_text
 
 
 def test_plot_selection_formats_and_colors_are_independent(tmp_path: Path) -> None:

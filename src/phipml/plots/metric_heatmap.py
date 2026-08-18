@@ -13,7 +13,10 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from phipml.plots.result_summary import load_classification_result
+from phipml.plots.result_summary import (
+    load_classification_result,
+    normalise_output_formats,
+)
 
 
 @dataclass(frozen=True)
@@ -207,10 +210,20 @@ def plot_metric_heatmap(
     annotate_uncertainty: bool = True,
     figsize: tuple[float, float] | None = None,
     output_path: str | Path | None = None,
+    output_formats: Sequence[str] | None = None,
+    dpi: int = 600,
 ) -> tuple[plt.Figure, plt.Axes]:
-    """Plot a metric matrix with mean ± SD or native-CI annotations."""
+    """Plot a metric matrix with mean ± SD or native-CI annotations.
+
+    When ``output_formats`` is omitted, ``output_path`` is saved exactly as
+    supplied for backward compatibility. When formats are provided, the
+    suffix of ``output_path`` is treated as an optional format hint and the
+    figure is written once per requested format using the same filename stem.
+    """
     if not vmin < vmax:
         raise ValueError("vmin must be smaller than vmax")
+    if dpi < 1:
+        raise ValueError("dpi must be at least 1")
     width = max(4.8, 1.25 * len(summary.mean.columns) + 2.5)
     height = max(4.2, 1.05 * len(summary.mean.index) + 2.4)
     fig, ax = plt.subplots(figsize=figsize or (width, height))
@@ -272,5 +285,24 @@ def plot_metric_heatmap(
     if output_path is not None:
         path = Path(output_path).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path, bbox_inches="tight", facecolor="white", dpi=600)
+        if output_formats is None:
+            fig.savefig(path, bbox_inches="tight", facecolor="white", dpi=dpi)
+        else:
+            formats = normalise_output_formats(output_formats)
+            known_suffixes = {".pdf", ".svg", ".png"}
+            stem = (
+                path.with_suffix("")
+                if path.suffix.lower() in known_suffixes
+                else path
+            )
+            for output_format in formats:
+                destination = stem.parent / f"{stem.name}.{output_format}"
+                save_kwargs: dict[str, object] = {
+                    "format": output_format,
+                    "bbox_inches": "tight",
+                    "facecolor": "white",
+                }
+                if output_format != "svg":
+                    save_kwargs["dpi"] = dpi
+                fig.savefig(destination, **save_kwargs)
     return fig, ax

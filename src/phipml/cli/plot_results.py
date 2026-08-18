@@ -189,8 +189,8 @@ def parse_args_plot_results(argv: list[str] | None = None) -> argparse.Namespace
         metavar="COLUMN",
         help=(
             "Optional audit columns displayed in the compact table, for "
-            "example 'Feature type', 'Statistic', 'Top-k SHAP frequency (%)', "
-            "'Mean rank when in top K', or 'Selection frequency (%)'. They "
+            "example 'Feature type', 'Statistic', 'Top-k SHAP frequency (%%)', "
+            "'Mean rank when in top K', or 'Selection frequency (%%)'. They "
             "remain available in the CSV when omitted from the figure."
         ),
     )

@@ -611,17 +611,22 @@ Plot ROC-AUC, AP, or a threshold-dependent classification metric:
 ```bash
 phipml-heatmap --manifest results/manifest.csv \
   --metric roc.auc \
-  --output results/roc_auc_heatmap.pdf
+  --output results/roc_auc_heatmap
 
 phipml-heatmap --manifest results/manifest.csv \
   --metric pr.ap \
-  --output results/ap_heatmap.pdf
+  --output results/ap_heatmap
 
 phipml-heatmap --manifest results/manifest.csv \
   --metric classification.balanced_accuracy \
   --vmin 0 --vmax 1 \
-  --output results/balanced_accuracy_heatmap.pdf
+  --output results/balanced_accuracy_heatmap
 ```
+
+By default, each heatmap is saved as PDF, SVG, and PNG. Use, for example,
+`--formats pdf svg` to request a smaller set. A supported suffix on `--output`
+is treated as an optional hint, so `--output results/roc_auc_heatmap.pdf` also
+creates all three default formats with the `roc_auc_heatmap` stem.
 
 Cells with repeated files display the mean, SD, and number of runs. A cell
 represented by one external-validation file displays its saved confidence

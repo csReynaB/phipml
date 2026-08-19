@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from typing import Any
 import pandas as pd
 import yaml
 
+from phipml import __version__
 from phipml.io.data_handler import Config
 from phipml.plots.result_summary import DEFAULT_OUTPUT_FORMATS, plot_result_files
 
@@ -48,13 +50,20 @@ def _expand_results(values: list[str]) -> list[Path]:
     return unique
 
 
-def parse_args_plot_results(argv: list[str] | None = None) -> argparse.Namespace:
+def _build_plot_results_parser() -> argparse.ArgumentParser:
+    """Build the plot-results parser for both parsing and help display."""
     parser = argparse.ArgumentParser(
         prog="phipml-plot",
         description=(
-            "Plot performance and SHAP summaries from one result or aggregate "
-            "repeated phipml runs."
+            f"phipml {__version__} - plot performance and SHAP summaries from "
+            "one result or aggregate repeated phipml runs."
         ),
+    )
+    parser.add_argument(
+        "--version",
+        "-V",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     parser.add_argument(
         "results",
@@ -88,9 +97,7 @@ def parse_args_plot_results(argv: list[str] | None = None) -> argparse.Namespace
         help="Figure formats; defaults to PDF, SVG, and PNG",
     )
     parser.add_argument("--dpi", type=int, default=None)
-    parser.add_argument(
-        "--split", choices=("auto", "train", "test"), default=None
-    )
+    parser.add_argument("--split", choices=("auto", "train", "test"), default=None)
     parser.add_argument(
         "--class-labels",
         nargs=2,
@@ -232,7 +239,12 @@ def parse_args_plot_results(argv: list[str] | None = None) -> argparse.Namespace
     )
     parser.add_argument("--table-prevalence-cmap", default=None)
     parser.add_argument("--feature-table-title", default=None)
-    return parser.parse_args(argv)
+    return parser
+
+
+def parse_args_plot_results(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse plotting arguments."""
+    return _build_plot_results_parser().parse_args(argv)
 
 
 def _load_plot_config(
@@ -295,10 +307,7 @@ def _yaml_paths(value: Any, *, plot_config: Path | None) -> list[str]:
     values = _name_sequence(value, name="results")
     if values is None:
         return []
-    return [
-        _yaml_path(item, plot_config=plot_config) or ""
-        for item in values
-    ]
+    return [_yaml_path(item, plot_config=plot_config) or "" for item in values]
 
 
 def _plot_output_dir(
@@ -327,7 +336,13 @@ def _plot_output_dir(
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args_plot_results(argv)
+    argument_values = sys.argv[1:] if argv is None else argv
+    parser = _build_plot_results_parser()
+    if not argument_values:
+        parser.print_help()
+        return 0
+
+    args = parser.parse_args(argument_values)
     raw, plot_config_path = _load_plot_config(args.plot_config)
     feature_table_settings = _optional_mapping(
         raw.get("feature_table"),
@@ -338,6 +353,11 @@ def main(argv: list[str] | None = None) -> int:
         result_values = args.results
     else:
         result_values = _yaml_paths(raw.get("results"), plot_config=plot_config_path)
+    if not result_values:
+        parser.error(
+            "result files are required either as positional arguments or in "
+            "--plot-config"
+        )
     result_paths = _expand_results(result_values)
 
     split = str(_choose(args.split, raw, "split", "auto"))
@@ -447,9 +467,7 @@ def main(argv: list[str] | None = None) -> int:
         {key: value for key, value in cli_colors.items() if value is not None}
     )
     class_colors = _name_sequence(
-        args.class_colors
-        if args.class_colors is not None
-        else raw.get("class_colors"),
+        args.class_colors if args.class_colors is not None else raw.get("class_colors"),
         name="class_colors",
     )
     if class_colors is not None:
@@ -457,9 +475,11 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("class_colors must contain exactly two values")
         colors["negative_class"], colors["positive_class"] = class_colors
     row_colors = _name_sequence(
-        args.table_row_colors
-        if args.table_row_colors is not None
-        else feature_table_settings.get("row_colors"),
+        (
+            args.table_row_colors
+            if args.table_row_colors is not None
+            else feature_table_settings.get("row_colors")
+        ),
         name="feature_table.row_colors",
     )
     if row_colors is not None:
@@ -471,23 +491,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.table_prevalence_cmap is None and feature_table_settings.get(
         "prevalence_cmap"
     ):
-        colors["table_prevalence_cmap"] = str(
-            feature_table_settings["prevalence_cmap"]
-        )
+        colors["table_prevalence_cmap"] = str(feature_table_settings["prevalence_cmap"])
 
     annotation_columns = _name_sequence(
-        args.table_annotation_columns
-        if args.table_annotation_columns is not None
-        else feature_table_settings.get(
-            "annotation_columns",
-            raw.get("table_annotation_columns"),
+        (
+            args.table_annotation_columns
+            if args.table_annotation_columns is not None
+            else feature_table_settings.get(
+                "annotation_columns",
+                raw.get("table_annotation_columns"),
+            )
         ),
         name="feature_table.annotation_columns",
     )
     extra_columns = _name_sequence(
-        args.table_extra_columns
-        if args.table_extra_columns is not None
-        else feature_table_settings.get("extra_columns"),
+        (
+            args.table_extra_columns
+            if args.table_extra_columns is not None
+            else feature_table_settings.get("extra_columns")
+        ),
         name="feature_table.extra_columns",
     )
 

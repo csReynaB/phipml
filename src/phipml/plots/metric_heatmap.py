@@ -291,9 +291,7 @@ def plot_metric_heatmap(
             formats = normalise_output_formats(output_formats)
             known_suffixes = {".pdf", ".svg", ".png"}
             stem = (
-                path.with_suffix("")
-                if path.suffix.lower() in known_suffixes
-                else path
+                path.with_suffix("") if path.suffix.lower() in known_suffixes else path
             )
             for output_format in formats:
                 destination = stem.parent / f"{stem.name}.{output_format}"

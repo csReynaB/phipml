@@ -15,7 +15,6 @@ from phipml.cli.plot_results import main as plot_main  # noqa: E402
 from phipml.cli.train_test import main as train_main  # noqa: E402
 from phipml.io.data_handler import Config  # noqa: E402
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 MOCK_ROOT = REPOSITORY_ROOT / "mock_examples"
 EXTERNAL_ROOT = MOCK_ROOT / "external_validation_noisy"
@@ -139,9 +138,7 @@ def test_real_mock_validation_artifact_reconstructs_and_plots(
     for filename in expected:
         assert (output_dir / filename).stat().st_size > 0
 
-    feature_table = pd.read_csv(
-        output_dir / "mock_external_feature_importance.csv"
-    )
+    feature_table = pd.read_csv(output_dir / "mock_external_feature_importance.csv")
     assert {
         "Feature",
         "Feature type",

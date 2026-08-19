@@ -14,6 +14,7 @@ import yaml
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
+from phipml import __version__  # noqa: E402
 from phipml.cli.metric_heatmap import (  # noqa: E402
     main as heatmap_main,
     parse_args_metric_heatmap,
@@ -736,6 +737,27 @@ def test_plot_cli_help_renders_literal_percentage_column_names(
     help_text = " ".join(capsys.readouterr().out.split())
     assert "Top-k SHAP frequency (%)" in help_text
     assert "Selection frequency (%)" in help_text
+
+
+def test_plot_cli_without_arguments_prints_help_and_exits_cleanly(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert plot_main([]) == 0
+
+    help_text = capsys.readouterr().out
+    assert "usage: phipml-plot" in help_text
+    assert "--plot-config" in help_text
+    assert "Result paths or quoted glob patterns" in help_text
+
+
+def test_plot_cli_version_comes_from_package_metadata(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        plot_main(["--version"])
+
+    assert error.value.code == 0
+    assert capsys.readouterr().out.strip() == f"phipml-plot {__version__}"
 
 
 def test_plot_selection_formats_and_colors_are_independent(tmp_path: Path) -> None:

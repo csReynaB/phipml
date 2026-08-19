@@ -60,6 +60,11 @@ micromamba activate phipml
 python -m pip install --no-build-isolation --no-deps -e .
 ```
 
+`ML_env.yml` pins the exact versions used for testing. The compatible version
+ranges in `pyproject.toml` use those tested releases as their lower bounds, so
+ordinary pip installations remain flexible without crossing major-version
+compatibility boundaries.
+
 Use a non-editable installation for a fixed deployment:
 
 ```bash
@@ -473,6 +478,9 @@ phipml-plot 'results/nested_random-forest_demo_*.joblib' \
   --output-dir results/plots \
   --output-prefix controls_vs_hcc
 ```
+
+Running `phipml-plot` without arguments prints its help and exits successfully.
+Use `phipml-plot --version` to display the installed package version.
 
 Select only the required plots and formats when preparing a specific panel:
 

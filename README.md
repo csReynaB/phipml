@@ -1,10 +1,39 @@
 # phipml
 
+[![Version](https://img.shields.io/badge/version-4.2.0-4C78A8)](https://github.com/csReynaB/phipml)
+[![Python](https://img.shields.io/badge/Python-3.10-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-2E8B57)](LICENSE)
+[![Container](https://github.com/csReynaB/phipml/actions/workflows/container.yaml/badge.svg)](https://github.com/csReynaB/phipml/actions/workflows/container.yaml)
+
 `phipml` is a Python package for reproducible binary classification of
 PhIP-seq and other high-dimensional biological data. It provides a YAML-driven
 workflow for loading data, defining cohorts, fitting Random Forest or XGBoost
 models, evaluating performance, interpreting models with SHAP, and validating
 a final model in independent cohorts.
+
+The package exposes three command-line programs:
+
+| Command | Purpose |
+| --- | --- |
+| `phipml` | Train models, run nested CV, and evaluate external cohorts |
+| `phipml-plot` | Plot performance, uncertainty, SHAP, and feature summaries |
+| `phipml-heatmap` | Compare saved metrics across training/validation cohorts |
+
+## Quick start
+
+```bash
+git clone https://github.com/csReynaB/phipml.git
+cd phipml
+
+micromamba create --yes --name phipml --file ML_env.yml
+micromamba activate phipml
+python -m pip install --no-build-isolation --no-deps -e .
+
+phipml -c configs/config_file.yaml
+```
+
+For pip, Docker, GHCR, JupyterLab, and Apptainer/HPC instructions, see
+[`INSTALLATION.md`](INSTALLATION.md).
 
 ## Main features
 
@@ -45,10 +74,8 @@ The modelling workflow is designed to reduce information leakage:
 
 ## Installation
 
-### Micromamba or Conda
-
-The supplied `ML_env.yml` contains the tested scientific, plotting, Excel, and
-Jupyter dependencies:
+The recommended reproducible installation uses the exact versions in
+`ML_env.yml`:
 
 ```bash
 git clone https://github.com/csReynaB/phipml.git
@@ -56,86 +83,70 @@ cd phipml
 
 micromamba create --yes --name phipml --file ML_env.yml
 micromamba activate phipml
-
 python -m pip install --no-build-isolation --no-deps -e .
 ```
 
-`ML_env.yml` pins the exact versions used for testing. The compatible version
-ranges in `pyproject.toml` use those tested releases as their lower bounds, so
-ordinary pip installations remain flexible without crossing major-version
-compatibility boundaries.
-
-Use a non-editable installation for a fixed deployment:
+An existing Python 3.10+ environment can instead use pip:
 
 ```bash
-python -m pip install --no-build-isolation --no-deps .
+python -m pip install .
 ```
 
-### Pip
-
-Inside an existing Python 3.10+ environment:
-
-```bash
-python -m pip install -e .
-```
-
-For development tools:
-
-```bash
-python -m pip install -e ".[dev]"
-```
-
-Confirm the installation:
+Confirm all command-line entry points:
 
 ```bash
 phipml --version
 phipml -h
+phipml-plot -h
+phipml-heatmap -h
 ```
 
-## Docker
+The full guide covers Micromamba, uv, pip/venv, containers, registry
+publication, JupyterLab, and HPC deployment:
+[`INSTALLATION.md`](INSTALLATION.md).
+
+## Containers and clusters
 
 Build the image from the repository root:
 
 ```bash
-docker build -t phipml:latest .
-```
-
-Show the CLI help:
-
-```bash
+docker build --tag phipml:latest .
 docker run --rm phipml:latest
 ```
 
-Run a configuration stored in the current directory:
+Or pull from GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/csreynab/phipml:latest
+```
+
+Run against the current project:
 
 ```bash
 docker run --rm -it \
   --user "$(id -u):$(id -g)" \
-  -e HOME=/tmp \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  phipml:latest \
+  --mount type=bind,src="$PWD",dst=/workspace \
+  --workdir /workspace \
+  ghcr.io/csreynab/phipml:latest \
   phipml -c configs/config.yaml
 ```
 
-Relative paths in the YAML should point to files available under the mounted
-workspace. If a configuration contains absolute host paths outside the project,
-mount those directories at the same container paths.
-
-Start JupyterLab with `phipml` installed in its kernel:
+The same image can be converted for an HPC cluster:
 
 ```bash
-docker run --rm -it \
-  --user "$(id -u):$(id -g)" \
-  -e HOME=/tmp \
-  -p 8888:8888 \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  phipml:latest \
-  jupyter lab --ip=0.0.0.0 --port=8888 --no-browser
+apptainer pull phipml_4.2.0.sif \
+  docker://ghcr.io/csreynab/phipml:4.2.0
+
+apptainer exec --cleanenv \
+  --bind "$PWD:/workspace" \
+  --pwd /workspace \
+  phipml_4.2.0.sif \
+  phipml -c configs/config.yaml
 ```
 
-Open the tokenized URL printed by Jupyter in a local browser.
+Use immutable version tags for reproducible analyses. Publishing instructions,
+plotting/Jupyter examples, private-registry login, and a Slurm template are in
+[`INSTALLATION.md`](INSTALLATION.md).
 
 ## Configuration
 

@@ -1,0 +1,23 @@
+cff-version: 4.2.0
+message: "If you use phipml in your research, please cite it using the metadata below."
+
+title: "phipml: Machine-learning analysis of PhIP-seq data"
+
+authors:
+  - family-names: "Reyna-Blanco"
+    given-names: "Carlos S."
+    orcid: "https://orcid.org/0000-0002-7104-1446"
+
+version: 4.2.0
+date-released: "2026-08-21"
+
+repository-code: "https://github.com/csReynaB/phipml"
+
+license: MIT
+
+keywords:
+  - PhIP-seq
+  - machine learning
+  - bioinformatics
+  - random forest
+  - SHAP
